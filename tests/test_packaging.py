@@ -18,6 +18,7 @@ different shape — a path resolving *outside* the package entirely — which en
 from __future__ import annotations
 
 import ast
+import json
 import re
 import subprocess
 import tomllib
@@ -114,6 +115,25 @@ def test_pypi_readme_has_no_relative_links():
     ]
     relative = [t for t in targets if not t.startswith(("http://", "https://", "#"))]
     assert not relative, f"README.pypi.md links break on PyPI: {relative}"
+
+
+def test_server_json_names_the_release_it_publishes():
+    """The MCP Registry takes server.json at each release and checks it against PyPI: it fetches
+    `pypi.org/pypi/<identifier>/<version>/json` and refuses a description without an
+    `mcp-name: <name>` token followed by whitespace, a tag or `-->`. `uvx` then runs the `--with`
+    pin beside `backlot@<version>`, so every version the file names is the package's.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        project = tomllib.load(f)["project"]
+    server = json.loads((REPO_ROOT / "server.json").read_text(encoding="utf-8"))
+    [package] = server["packages"]
+    assert package["identifier"] == project["name"]
+    assert server["version"] == package["version"] == project["version"]
+    assert package["runtimeArguments"] == [
+        {"type": "named", "name": "--with", "value": f"backlot[mcp]=={project['version']}"}
+    ]
+    readme = (REPO_ROOT / "README.pypi.md").read_text(encoding="utf-8")
+    assert re.search(rf"mcp-name: {re.escape(server['name'])}(\s|<|-->)", readme)
 
 
 # The same drift class, one layer up: an OPTIONAL-dependency gate. `pytest.importorskip` makes a

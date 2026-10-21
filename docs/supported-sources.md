@@ -149,11 +149,11 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and a response reports its
-choice in `X-GitHub-Api-Version-Selected` but on the answers `backlot.main.echo_github_api_version`
-names. `search/code` is the one route that does neither: real's code search backend does not read
-the header, so a pinned version there is served whatever it says and no response from it carries the
-`Selected` header (measured 2026-09-06).
+unpinned request and one whose header is empty get `2022-11-28`, any other value is the real API's
+400, and a response reports its choice in `X-GitHub-Api-Version-Selected` but on the answers
+`backlot.main.echo_github_api_version` names. `search/code` is the one route that does neither:
+real's code search backend does not read the header, so a pinned version there is served whatever it
+says and no response from it carries the `Selected` header (measured 2026-09-06).
 
 **An operation GitHub publishes and Backlot does not serve is refused for its credential first**: a
 token that does not resolve is "Bad credentials", as on a served route, and no
@@ -198,6 +198,13 @@ its header apart, a path real does not route asked by a caller that sent one, an
 Backlot does not serve, the 401 for an `Authorization` that carries no credential and the 401 for
 none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and
 2026-10-16).
+
+**Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
+answered before a route runs included: five uppercase hex fields joined by colons, the last being
+the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
+spent-window 403 quotes it and that second in its `message`. Real's `Date` is the second its answer
+left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock once a
+second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -488,15 +495,15 @@ re-imported; the startup schema check names the missing column.
 A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8` upper-case —
 as real's is on every route and status measured, except where real answers a different type
 altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
-`application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
-Connect token is the bare `application/json`, or XML for an `Accept` that names `application/xml`
-and nowhere names `application/json`, matched as text in any case. An `Accept` admitting no JSON
-draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's
-400 and whatever the route answers, on every operation but the ones
-`backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
-body; the 401 takes its media type from `Accept`. A `q` named in another case (`Q=2`) that is no
-quality fails an answer as it is written: a route's answer, the 401 and the `orderBy` refusal are
-Jira's 500 page, its other refusals as they were.
+`application/problem+json;charset=UTF-8`, the gateway's 403 for a bearer it cannot read as a Connect
+token is the bare `application/json`, or XML for an `Accept` that names `application/xml` and
+nowhere names `application/json`, matched as text in any case, and the 400 for a `;` in a path is
+the bare `application/json` too where it is JSON. An `Accept` admitting no JSON draws a 406 in that
+RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's 400 and whatever the
+route answers, on every operation but the ones `backlot/data/jira_unserved.json` marks, and one with
+any member Jira cannot read draws it with no body; the 401 takes its media type from `Accept`. A `q`
+named in another case (`Q=2`) that is no quality fails an answer as it is written: a route's answer,
+the 401 and the `orderBy` refusal are Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
@@ -505,29 +512,39 @@ length but on Jira's 401 to an unauthenticated caller, which is where Jira parts
 `OPTIONS` is 200 for a caller whose credential resolves, with an empty `text/html` body, an empty
 `Accept-Patch`, an `Allow` naming the methods the vendor serves at that route — the `PUT` and
 `DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
-gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
-Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
-other method it does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns
-back a path that carries a script tag or a directory step with a 403, and the CDN one with a `%00`
-byte or a `%` that two hex digits do not follow with a 400, each its own page; an encoded slash or
-backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, where Jira takes it apart
-and routes what it decodes to. A path no route serves is RFC 7807 at 404 with
-`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
-no route here serves — reached by a path with no route or by a method a served route does not take —
-a `Content-Type` the operation does not take is its 415 for any caller the gateway lets through, and
-after that a caller with no credential gets Jira's 401 where the operation will not run anonymously
+gets Jira's 401.
+
+A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on Confluence. Nor
+does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any other method it
+does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns back a path that
+carries a script tag or a directory step with a 403, and the CDN one with a `%00` byte or a `%` that
+two hex digits do not follow with a 400, each its own page. Behind those, and ahead of the gateway's
+`PATCH`, a `;` anywhere in a path, bare or as `%3B`, is a 400 with `Access-Control-Allow-Origin: *`:
+`{"message":"","status":400}` where `Accept` holds `application/json` as written, a page otherwise.
+An encoded slash or backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, and an
+encoded backslash under `/atlassian/rest` the same page, where Jira takes an encoded slash apart and
+routes what it decodes to.
+
+A path no route serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes
+nothing at it, but a `[` or `]` in the path, escaped or bare, makes that 404 and a type-conversion
+400 pages of Jira's web app; at an operation it publishes and no route here serves — reached by a
+path with no route or by a method a served route does not take — a `Content-Type` the operation does
+not take is its 415 for any caller the gateway lets through, and after that a caller with no
+credential gets Jira's 401 where the operation will not run anonymously
 (`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
 project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
 405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
 mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
-`/jira/for-you`, and Jira's own not-found page for the rest. Every answer past the CDN carries
-`atl-request-id`, `atl-traceid`, `x-content-type-options` and `x-xss-protection`, and Jira's own
-answers add `x-arequestid`, `cache-control` and `timing-allow-origin`, which the gateway's refusals
-(the Connect-token 403, a `PATCH`) do not carry; a caller whose credential resolves also gets its
-own `x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`,
-`x-ratelimit-limit`, `x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one,
-counted per method and route. An anonymous request carries none of those five, and the no-endpoint
-404, a 405, a 406 and an unserved operation's 415 carry the account id alone.
+`/jira/for-you`, and Jira's own not-found page for the rest.
+
+Every answer past the CDN carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
+`x-xss-protection` (the 400 for a bare `;` neither id), and Jira's own answers add `x-arequestid`,
+`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
+`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
+burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
+where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
+request carries none of those five, and the no-endpoint 404, a 405, a 406 and an unserved
+operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
@@ -545,7 +562,8 @@ counted per method and route. An anonymous request carries none of those five, a
 
 Plus the `Team.issues` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
 connections, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
-`release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call.
+`release`, `attachment`, `issueRelation`, `teamMembership`) the official SDK's lazy relation accessors
+call.
 
 Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter`
 compiled into SQL, and full introspection.
@@ -576,16 +594,29 @@ framework's 405 carries a `request_id` in the body and `x-notion-request-id` on 
 value; real's differs per response and this one is derived from the request, so a corpus served
 twice answers the same id.
 
+A request is read as the real API reads it before anything is looked up. A JSON body is read first,
+ahead of the credential and the version, as Express reads one: a body that does not parse is
+`invalid_json`, a charset or a `Content-Encoding` it cannot read is its 415 and a body past 512000
+bytes its 413, and a body sent as anything but `application/json` is not read at all. The query
+string is parsed as Node's `qs` parses one, so a repeated key is `Conflicting values` and a
+bracketed one an object, each value is read as Notion's validator reads it (`01` is 1, `0x10` is 16,
+`TRUE` is `true`), and a member a route does not take is refused by name, on a `GET`'s body as on
+its query string; `pages/{id}` and `comments` serve an unknown query parameter, as on real. A
+refusal quotes a value back as JSON cut after 55 UTF-16 units. A list starts at the item a
+`start_cursor` names and hands back the next item's id as its cursor (a data source query's is
+`s:<session>:<row>`), and a `page_size` of 0, past 100 or below 0 is the whole page, the empty page
+or a refusal, route by route as real answers it.
+
 | Endpoint | Notes |
 |---|---|
-| `POST search` | |
+| `POST search` | `filter` narrows to an object type and to the trash, which is empty here; `sort` is refused where real refuses it and otherwise not applied |
 | `pages/{id}` | |
 | `blocks/{id}` | |
 | `blocks/{id}/children` | |
 | `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
 | `POST databases/{id}/query` | Versions before `2025-09-03` only |
 | `data_sources/{id}` | `2025-09-03` and later only |
-| `POST data_sources/{id}/query` | `2025-09-03` and later only |
+| `POST data_sources/{id}/query` | `2025-09-03` and later only. `filter` and `sorts` are refused where real refuses them, a property the data source does not have included, and are not applied; `filter_properties` narrows each row |
 | `users[/{id}]` | |
 | `users/me` | |
 | `comments` | |
@@ -709,7 +740,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `search.all` | |
 | `search.files` | |
 | `auth.test` | |
-| `api.test` | Auth-free connectivity check |
+| `api.test` | Auth-free connectivity check; a token it is sent meets the checks of the other methods' tokens, and `args` echoes it as `token` |
 
 A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
 member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and
@@ -723,9 +754,24 @@ answer an id that names nothing gets, so a private room's name, purpose and memb
 readable from its id alone. A required argument that was never sent is `invalid_arguments` rather
 than a `not_found` for something the caller never named.
 
-A POST with a body sent as `application/json` or `text/plain` with no charset is answered with
-real's `missing_charset` warning, and a form or multipart one that names a charset with
-`superfluous_charset`, each in `warning` and in `response_metadata.warnings`.
+A POST's body is read before the method runs, ahead of its credential and its arguments, as the real
+Web API reads it. A body with no Content-Type is `missing_post_type`, one under a media type other
+than `application/json`, `text/plain`, `application/x-www-form-urlencoded` and
+`multipart/form-data`, spelt so, is `invalid_post_type` unless it carries an argument read as a form
+(a Content-Type starting with the form type in any case is read as one) or as multipart (a media
+type that is a prefix of `multipart/form-data` in any case, with a boundary:
+`multipart/form; boundary=b` and `; boundary=b` are read, `multipart/form-datax; boundary=b` is
+not); a charset other than `utf-8`, `utf8` or `iso-8859-1` outside a form or multipart type is
+`invalid_charset`, and a form or multipart body real cannot read is `invalid_form_data`,
+`invalid_arg_name` or `invalid_array_arg`. A multipart body is read as HHVM reads one, which real's
+answers match: a part's name follows a urlencoded form's name rules but for the spaces, tabs and
+line breaks after a `[`, which are dropped (`a[ b` is `a_b`, where a form's is `invalid_arg_name`),
+its value is taken as sent, `+` and `%XX` included, and its `token` is read as a form's is; an
+argument the body sends is read ahead of the same name in the query string.
+
+A POST whose form or multipart type names a charset is answered with real's `superfluous_charset`
+warning, and one with a body under any other type that names none with `missing_charset`, each in
+`warning` and in `response_metadata.warnings`. A body refused as above carries neither.
 
 ## Backlot's own endpoints
 

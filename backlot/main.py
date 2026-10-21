@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 from starlette.types import Scope
 
-from backlot import auth, errors, openapi, store, synth
+from backlot import auth, errors, openapi, store, synth, telemetry
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -36,6 +37,8 @@ from backlot.routers import (
     s3,
     slack,
 )
+from backlot.telemetry import naming, recorder
+from backlot.telemetry.middleware import TelemetryMiddleware
 
 
 @asynccontextmanager
@@ -118,9 +121,18 @@ async def lifespan(app: FastAPI):
     # On app.state, not fire-and-forget, so tests can join it instead of polling /health.
     app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
     app.state.warm_thread.start()
+    exporter = None
+    if telemetry.enabled(settings):
+        exporter = recorder.Exporter(
+            recorder.RECORDER, recorder.ENDPOINT, recorder.INTERVAL, surface=naming.surface
+        )
+        exporter.start()
+        print(telemetry.notice(recorder.ENDPOINT), file=sys.stderr)
     try:
         yield
     finally:
+        if exporter is not None:
+            exporter.stop()
         conn.close()
 
 
@@ -174,10 +186,10 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
     # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
     # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
-    # GitHub with FastAPI's `JSONResponse`. GitHub honours `callback` through an envelope of its
-    # own — `/**/cb({"meta": …, "data": …})` under `application/javascript; charset=utf-8`, with
-    # the status inside `meta` and an unparseable name refused UNWRAPPED — which is a shape to
-    # build, not one to share.
+    # most GitHub errors with FastAPI's `JSONResponse`. GitHub honours `callback` through an
+    # envelope of its own — `/**/cb({"meta": …, "data": …})` under
+    # `application/javascript; charset=utf-8`, with the status inside `meta` and an unparseable
+    # name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -256,6 +268,18 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
 
 
 @app.middleware("http")
+async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
+    """An operation HubSpot publishes that no route here serves is refused for its credential as a
+    served route refuses one, ahead of the router's 404 or 405
+    (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
+    if request.scope["path"].startswith("/hubspot/"):
+        refusal = hubspot.refuse_an_unserved_operation(request)
+        if refusal is not None:
+            return refusal
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, on the `/github` answers real echoes one for,
     200 and error alike.
@@ -265,13 +289,15 @@ async def echo_github_api_version(request: Request, call_next):
     and diff media types do (see ``backlot.routers.github``) — so exactly the responses whose SHAPE
     the header describes would ship without it.
 
-    A rejected version gets no echo, matching real: it selected nothing. That is `None` from
-    ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header, and
-    neither does `/rate_limit` asked with no `Authorization` header (see
+    A rejected version gets no added echo: ``selected_api_version`` returns `None`. The pull and
+    contents backend's own empty echo is preserved (see ``github._validate_api_version``).
+    Code search gets no echo either, whatever it pinned: real's code search backend does not read
+    the header, and neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
+    ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
+    (:func:`github.refused_an_unserved_operation_reported`).
     """
     response = await call_next(request)
     if (
@@ -279,7 +305,10 @@ async def echo_github_api_version(request: Request, call_next):
         and github.honours_api_version(request)
         and _github_routes(request.scope)
         and not github.refused_a_credential(request)
-        and not github.refused_an_unserved_operation(request)
+        and (
+            not github.refused_an_unserved_operation(request)
+            or github.refused_an_unserved_operation_reported(request)
+        )
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -340,7 +369,11 @@ async def report_github_rate_limit(request: Request, call_next):
             return refusal
     response = await call_next(request)
     if gated and not github.refused_an_unserved_operation_uncounted(request):
-        for name, value in github.rate_limit_headers(request, response.status_code).items():
+        for name, value in github.rate_limit_headers(
+            request,
+            response.status_code,
+            count=not github.refused_an_unserved_operation_reported(request),
+        ).items():
             response.headers[name] = value
     return response
 
@@ -434,6 +467,19 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
                 response.headers[name] = value
         return response
     return await call_next(request)
+
+
+@app.middleware("http")
+async def read_a_notion_body_as_express_does(request: Request, call_next):
+    """Read a `/notion` request's body the way Express reads one in front of every Notion route,
+    and answer the refusal it draws there, ahead of the route, the credential and the version
+    (``notion.front_door_body``). Registered before the trailing-slash rewrite below, which makes it
+    the inner of the two, so the path it derives an answer's ids from is the one the route sees."""
+    path = request.url.path
+    if not (path == "/notion" or path.startswith("/notion/")):
+        return await call_next(request)
+    refusal = await notion.front_door_body(request)
+    return refusal if refusal is not None else await call_next(request)
 
 
 @app.middleware("http")
@@ -718,7 +764,8 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
     the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
     header is asked for rather than assumed, through ``errors.head_content_length``. The request
-    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback``, which reads it.
+    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
+    ``routers.github._validate_api_version``, which read it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
@@ -792,6 +839,7 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
         request.method,
         raw_path.decode("latin-1"),
         request.scope.get("query_string", b"").decode("latin-1"),
+        request.headers.get("accept"),
     )
     if answer is None:
         return await call_next(request)
@@ -829,13 +877,23 @@ async def report_atlassian_headers(request: Request, call_next):
     return response
 
 
+def _a_slack_route_serves(scope: Scope) -> bool:
+    """Whether a Slack route serves this scope's method and path. Asked of
+    ``backlot.routers.slack.router``, which holds the Slack routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in slack.router.routes)
+
+
 @app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
-    """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
-    if request.url.path.startswith("/slack/") and request.method == "POST":
-        ctype = request.headers.get("content-type", "")
-        if "application/x-www-form-urlencoded" in ctype:
-            request.state._form = dict(await request.form())
+    """Read a Slack POST's body before the method runs, as real does (``slack.read_post_body``):
+    answer one real refuses with its error, or stash the arguments it carries for the router's
+    param lookup and the token's (``slack._param``, ``auth.slack_token``)."""
+    if request.method == "POST" and _a_slack_route_serves(request.scope):
+        args, error = slack.read_post_body(slack.post_content_type(request), await request.body())
+        if error is not None:
+            request.state.slack_body_refused = True
+            return JSONResponse({"ok": False, "error": error})
+        request.state._form = args
     return await call_next(request)
 
 
@@ -846,16 +904,18 @@ async def warn_slack_post_charset(request: Request, call_next):
     Middleware because the answers it goes on are built all over the router, the refusals of
     ``slack._caller_or_error`` and ``slack._missing_argument`` among them. The body is rendered
     again by ``JSONResponse``, which renders every Slack answer, so a warned answer is the unwarned
-    one's bytes with the two keys added; ``slack.attach_warning`` says where they go.
+    one's bytes with the two keys added; ``slack.attach_warning`` says where they go. A body
+    ``parse_slack_form`` refuses is answered with no warning, as real answers it.
     """
     if not (request.url.path.startswith("/slack/") and request.method == "POST"):
         return await call_next(request)
 
     warning = slack.post_charset_warning(
-        request.headers.get("content-type"), bool(await request.body())
+        slack.post_content_type(request), bool(await request.body())
     )
     response = await call_next(request)
-    if warning is None or response.status_code != 200:
+    refused = getattr(request.state, "slack_body_refused", False)
+    if warning is None or response.status_code != 200 or refused:
         return response
 
     body = b"".join([chunk async for chunk in response.body_iterator])
@@ -865,6 +925,55 @@ async def warn_slack_post_charset(request: Request, call_next):
         status_code=response.status_code,
         headers=headers,
     )
+
+
+#: The page Cloudflare, in front of Linear and Fireflies, answers a request carrying `Authorization`
+#: more than once with: `text/html` with no charset, CRLF line ends, 155 bytes.
+_CLOUDFLARE_REPEATED_AUTHORIZATION = (
+    "<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+    "<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+    "</body>\r\n</html>\r\n"
+)
+
+
+@app.middleware("http")
+async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
+    :data:`_CLOUDFLARE_REPEATED_AUTHORIZATION`'s 400, ahead of the route, the body and the
+    credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
+    a key, a key and `nope` in either order, a key and an empty value, two empty values, three
+    copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
+    with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
+    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`."""
+    path = request.url.path
+    if not any(
+        path == prefix or path.startswith(f"{prefix}/") for prefix in ("/linear", "/fireflies")
+    ):
+        return await call_next(request)
+    if not auth.repeated_authorization(request):
+        return await call_next(request)
+    return Response(
+        _CLOUDFLARE_REPEATED_AUTHORIZATION.encode(),
+        status_code=400,
+        headers={"Content-Type": "text/html"},
+    )
+
+
+@app.middleware("http")
+async def put_a_request_id_on_github_answers(request: Request, call_next):
+    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+
+    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
+    early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
+    and left on ``request.state`` for the token's spent-window `message`, which quotes it
+    (``github._rate_limit_exceeded_message``)."""
+    if not request.url.path.startswith("/github"):
+        return await call_next(request)
+    rid = github.request_id(request.method, request.url.path, request.url.query)
+    request.state.github_request_id = rid
+    response = await call_next(request)
+    response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
+    return response
 
 
 @app.middleware("http")
@@ -885,14 +994,23 @@ async def vendor_json_media_type(request: Request, call_next):
     than around it; the route handlers and the two exception handlers above are covered from either
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
     with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does.
+    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
+    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
-    if response.headers.get("content-type") == "application/json":
+    if response.headers.get("content-type") == "application/json" and not request.scope.get(
+        "atlassian_front_door"
+    ):
         media_type = errors.json_media_type(request.url.path, response.status_code)
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+# Registered after every middleware above, which makes it the outermost: it sees every answer,
+# including one a middleware gives without reaching a route.
+app.add_middleware(TelemetryMiddleware)
 
 
 @app.get("/health")

@@ -150,12 +150,13 @@ _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
 # method here -- the reads, and the three write-adjacent methods the spec types GET
 # (`chat.getPermalink`, `reactions.get`, `reactions.list`) -- it lists the form type alone.
 #
-# The split is measured, not assumed. `POST chat.getPermalink` with `channel` and `message_ts` as
-# JSON answers `invalid_arguments` ("missing required field: channel") on slack.com, so real
-# ignores a JSON body exactly where its spec declines one. `slack_sdk` 3.44.1 sends
-# `chat.postMessage`, `chat.update` and `chat.postEphemeral` as JSON
-# (`WebClient.api_call(..., json=kwargs)`) and the rest as form, so a client that works against
-# real works here only if this set is right.
+# Both halves of the split are measured against slack.com. `POST chat.postMessage` carrying
+# `channel` and `text` as JSON posted the message and echoed the text it was sent (2026-10-21),
+# so real reads a JSON body where its spec declares one. `POST chat.getPermalink` with its
+# arguments as JSON answers `invalid_arguments` ("missing required field: channel"), so it
+# ignores one where its spec declines one. `slack_sdk` 3.44.1 sends `chat.postMessage`,
+# `chat.update` and `chat.postEphemeral` as JSON (`WebClient.api_call(..., json=kwargs)`) and the
+# rest as form, so a client that works against real works here only if this set is right.
 JSON_BODY_METHODS = frozenset(
     {
         "chat.postMessage",
@@ -406,8 +407,9 @@ def read_post_body(
 
     A JSON body is read for the `method` in :data:`JSON_BODY_METHODS` alone, after every check
     above, so what a body is refused for does not turn on which method it was sent to. Whether a
-    JSON body is read does: `POST chat.getPermalink` carrying its arguments as JSON answers
-    `invalid_arguments` ("missing required field: channel") on slack.com.
+    JSON body is READ does, and both answers are measured on slack.com: `POST chat.postMessage`
+    sent one posted the message (2026-10-21), and `POST chat.getPermalink` sent one answers
+    `invalid_arguments` ("missing required field: channel").
     """
     if not content_type:
         return {}, "missing_post_type" if body else None
@@ -1767,14 +1769,24 @@ def _invalidate(request: Request, channel: str) -> None:
         members.pop(channel, None)
 
 
-def _writable_channel(request: Request, conn, caller: Caller):
+def _writable_channel(request: Request, conn, caller: Caller, *, by_name: bool = False):
     """``(channel_name, None)`` for a channel this caller may write to, else ``(None, error)``.
 
     `channel_not_found` for one they cannot see, which is Slack's own non-leaking answer: a caller
     outside a private channel is told it does not exist rather than that they lack permission, so
     the error cannot be used to enumerate channels.
+
+    `by_name` also reads the argument as a channel's name, with or without a leading `#`. It is a
+    property of the method, not of the argument: measured against slack.com on 2026-10-21 in one
+    workspace, `chat.postMessage` posted for the id, the name and `#name` alike, where
+    `chat.update` and `reactions.add` answered `channel_not_found` for the name and took the id
+    alone. A name nothing has is `channel_not_found`, as an id nothing has is.
     """
-    name = _channel_name(conn, _param(request, "channel") or "")
+    raw = _param(request, "channel") or ""
+    name = _channel_name(conn, raw)
+    if name is None and by_name:
+        wanted = raw[1:] if raw.startswith("#") else raw
+        name = wanted if wanted in _channel_names(conn) else None
     ids = auth.visible_ids(request, caller)
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return None, _err("channel_not_found")
@@ -1798,10 +1810,10 @@ async def chat_post_message(request: Request):
     where a workspace setting is not. Backlot does not truncate yet, and a 50,000-character text
     posts and reads back whole.
 
-    Which condition triggers `no_text` is Backlot's decision -- the spec enumerates the string
-    without describing when it fires -- and is drawn where `_missing_argument` already draws its
-    line: an ABSENT argument is `invalid_arguments`, a present but empty one is about the
-    workspace.
+    When `no_text` fires is measured, not chosen: against slack.com on 2026-10-21, `text`
+    absent and `text=` both answer `no_text`, where `channel` absent answers `invalid_arguments`
+    and `channel=` `channel_not_found`. A `text` of spaces posts, so the test is emptiness rather
+    than blankness. `chat.update` reads `text` by the same rule and `ts` by `channel`'s.
 
     Posting does not join a public channel the caller is not in, and nothing here has to arrange
     that: membership there is derived from `main.slack_messages`, which a written row never joins.
@@ -1823,13 +1835,13 @@ async def chat_post_message(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    if err := _missing_argument(request, "channel", "text"):
+    if err := _missing_argument(request, "channel"):
         return err
-    name, err = _writable_channel(request, conn, caller)
+    name, err = _writable_channel(request, conn, caller, by_name=True)
     if err is not None:
         return err
     text = _param(request, "text") or ""
-    if not text.strip():
+    if not text:
         return _err("no_text")
     author, uid, is_bot = _writer(caller)
     ids = auth.visible_ids(request, caller)
@@ -1944,13 +1956,13 @@ async def chat_update(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    if err := _missing_argument(request, "channel", "ts", "text"):
+    if err := _missing_argument(request, "channel", "ts"):
         return err
     name, ts, row, err = _own_message(request, conn, caller, "ts", "cant_update_message")
     if err is not None:
         return err
     text = _param(request, "text") or ""
-    if not text.strip():
+    if not text:
         return _err("no_text")
     author, _uid_, _bot = _writer(caller)
     store.patch_document(conn, "slack", (name, ts), "content", text)
@@ -1970,12 +1982,17 @@ async def chat_update(request: Request):
         ),
     )
     updated = store.document_by_key(conn, "slack", (name, ts))
+    # The message an edit echoes is not the message a read answers: measured against slack.com on
+    # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
+    # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
+    # the answer beside it either way.
+    echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
         "text": text,
-        "message": _message(updated),
+        "message": echoed,
     }
 
 

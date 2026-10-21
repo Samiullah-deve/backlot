@@ -3777,6 +3777,46 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
     assert posted["ts"] in [m["ts"] for m in hist["messages"]]
 
 
+def test_only_post_message_takes_a_channel_by_name(wclient, tokens):
+    # Naming a channel is a property of the method, not of the argument: `_writable_channel`
+    # records which methods real takes a name on. A name nothing has is `channel_not_found`
+    # wherever a name is read at all.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "by id"}
+    ).json()["ts"]
+    for channel in ("incidents", "#incidents"):
+        assert (
+            wclient.post(
+                "/slack/api/chat.postMessage", headers=h, data={"channel": channel, "text": "x"}
+            ).json()["ok"]
+            is True
+        )
+    assert (
+        wclient.post(
+            "/slack/api/chat.postMessage", headers=h, data={"channel": "nope-xyz", "text": "x"}
+        ).json()["error"]
+        == "channel_not_found"
+    )
+    assert (
+        wclient.post(
+            "/slack/api/chat.update",
+            headers=h,
+            data={"channel": "incidents", "ts": ts, "text": "x"},
+        ).json()["error"]
+        == "channel_not_found"
+    )
+    assert (
+        wclient.post(
+            "/slack/api/reactions.add",
+            headers=h,
+            data={"channel": "incidents", "timestamp": ts, "name": "eyes"},
+        ).json()["error"]
+        == "channel_not_found"
+    )
+
+
 def test_post_message_to_an_unreadable_channel_is_channel_not_found(wclient, tokens):
     # Slack's non-leaking answer: a caller who cannot see the channel is told it does not exist
     # rather than that they lack permission. Quoted from the spec's chat.postMessage error enum.
@@ -3788,26 +3828,34 @@ def test_post_message_to_an_unreadable_channel_is_channel_not_found(wclient, tok
     assert j == {"ok": False, "error": "channel_not_found"}
 
 
-def test_post_message_with_no_text_is_no_text(wclient, tokens):
+@pytest.mark.parametrize("method", ["chat.postMessage", "chat.update"])
+def test_a_text_that_is_absent_or_empty_is_no_text_and_a_blank_one_posts(wclient, tokens, method):
+    # `text` and `channel` are read by different rules, which `chat_post_message` records: an
+    # absent or empty `text` is `no_text` where an absent `channel` is `invalid_arguments`. A
+    # `text` of spaces is a message, so the test is emptiness rather than blankness.
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
-    j = wclient.post(
-        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": ""}
-    ).json()
-    assert j == {"ok": False, "error": "no_text"}
-
-
-def test_post_message_without_text_at_all_is_invalid_arguments(wclient, tokens):
-    # `_missing_argument`'s existing split: an absent argument is about the request the client
-    # built, an empty one is about the workspace. Slack answers them differently and clients
-    # branch on it.
-    h = _uh(tokens, "ava@acme.com")
-    cid = synth.slack_channel_id("incidents")
-    j = wclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid}).json()
-    assert j == {
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "to edit"}
+    ).json()["ts"]
+    args = {"channel": cid} | ({"ts": ts} if method == "chat.update" else {})
+    assert wclient.post(f"/slack/api/{method}", headers=h, data=args).json() == {
+        "ok": False,
+        "error": "no_text",
+    }
+    assert wclient.post(f"/slack/api/{method}", headers=h, data=args | {"text": ""}).json() == {
+        "ok": False,
+        "error": "no_text",
+    }
+    assert (
+        wclient.post(f"/slack/api/{method}", headers=h, data=args | {"text": "   "}).json()["ok"]
+        is True
+    )
+    # `channel` is the other way round, which is why the two are read by different rules.
+    assert wclient.post("/slack/api/chat.postMessage", headers=h, data={"text": "x"}).json() == {
         "ok": False,
         "error": "invalid_arguments",
-        "response_metadata": {"messages": ["[ERROR] missing required field: text"]},
+        "response_metadata": {"messages": ["[ERROR] missing required field: channel"]},
     }
 
 
@@ -3962,6 +4010,27 @@ def test_update_own_message_changes_history_and_search(wclient, tokens):
         "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "zarquon two"}
     ).json()
     assert j["ok"] is True and j["text"] == "zarquon two"
+    # The message an edit echoes is a reduced one, as `chat_update` records: it carries neither
+    # `ts` nor `reactions`, which a read of the same message answers. `ts` is on the answer
+    # beside it.
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "eyes"},
+    )
+    echoed = wclient.post(
+        "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "zarquon two"}
+    ).json()
+    assert "ts" not in echoed["message"] and "reactions" not in echoed["message"]
+    assert echoed["ts"] == ts
+    read_back = [
+        m
+        for m in wclient.post(
+            "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+        ).json()["messages"]
+        if m["ts"] == ts
+    ][0]
+    assert read_back["ts"] == ts and read_back["reactions"]
     hist = wclient.post(
         "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
     ).json()["messages"]

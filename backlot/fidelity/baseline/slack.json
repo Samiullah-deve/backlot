@@ -1500,19 +1500,19 @@
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.thread_ts": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.user": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.username": {
           "kind": "missing_field",
@@ -1610,49 +1610,37 @@
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.edited": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
-        },
-        "message.reactions": {
-          "kind": "extra_field",
-          "severity": "breaking",
-          "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.subtype": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Not measured on this method: the message edited in the workspace reachable from here had no subtype, and giving one a subtype means posting a kind of message this probe does not. Real was measured to answer `subtype` on `conversations.history` and `reactions.list` (2026-10-21), and Backlot builds every message with one builder (`slack._message`), so the field is here for the same reason it is there. The reference's example for this method abbreviates its message."
         },
         "message.team": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.thread_ts": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
-        },
-        "message.ts": {
-          "kind": "extra_field",
-          "severity": "breaking",
-          "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.type": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
-          "note": "The message Backlot serves is one builder's (`slack._message`), so what this method echoes back is the message every other method answers, and real was measured to carry this field on 2026-10-21 (`reactions.list`, `conversations.history`). Not measured on this method: it writes, and the only workspace reachable from here is a real one. The reference's example for this method abbreviates its message."
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         }
       }
     },

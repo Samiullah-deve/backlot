@@ -2833,10 +2833,6 @@
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "The message Backlot serves is one builder's (`slack._message`), so it carries the same fields on every method that answers one. Measured against slack.com on 2026-10-21 on the methods a read reaches: real answers this field on `reactions.list` and `conversations.history`, and `reactions.get` itself answered `edited`, `team`, `ts`, `type` and `user`. The reference's example for this method abbreviates its message."
         },
-        "message.permalink": {
-          "kind": "missing_field",
-          "severity": "gap"
-        },
         "message.subtype": {
           "kind": "extra_field",
           "severity": "breaking",
@@ -2887,6 +2883,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.permalink": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers `permalink` on the message that `reactions.get` and `reactions.list` carry, and on no other method that answers one -- `conversations.history` and `conversations.replies` carry none, which is why Backlot puts it on at those two call sites rather than in the shared message builder. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "items[].message.team": {
           "kind": "extra_field",

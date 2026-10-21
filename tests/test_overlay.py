@@ -263,22 +263,41 @@ def test_reset_restores_a_deleted_corpus_message(oclient, sample_settings, ro_co
     # the message back. That is the property that makes one eval run repeatable after another.
     from backlot import synth
 
-    email, channel, ts = ro_conn.execute(
-        "SELECT author_email, channel, ts FROM slack_messages WHERE channel = 'incidents' LIMIT 1"
-    ).fetchone()
-    h = {"Authorization": f"Bearer {_tokens(sample_settings)[email]}"}
-    cid = synth.slack_channel_id(channel)
-    oclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts})
-    gone = oclient.post(
-        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    assert ts not in [m["ts"] for m in gone]
+    rows = {
+        shape: ro_conn.execute(
+            f"SELECT author_email, channel, ts FROM slack_messages WHERE {shape} LIMIT 1"
+        ).fetchone()
+        for shape in ("thread_ts IS NULL", "thread_ts = ts")
+    }
+    tokens = _tokens(sample_settings)
+
+    def history(row):
+        return {
+            m["ts"]: m
+            for m in oclient.post(
+                "/slack/api/conversations.history",
+                headers={"Authorization": f"Bearer {tokens[row['author_email']]}"},
+                data={"channel": synth.slack_channel_id(row["channel"]), "limit": 200},
+            ).json()["messages"]
+        }
+
+    alone, root = rows["thread_ts IS NULL"], rows["thread_ts = ts"]
+    original = history(root)[root["ts"]]["text"]
+    for row in (alone, root):
+        oclient.post(
+            "/slack/api/chat.delete",
+            headers={"Authorization": f"Bearer {tokens[row['author_email']]}"},
+            data={"channel": synth.slack_channel_id(row["channel"]), "ts": row["ts"]},
+        )
+    # A root is deleted by a PATCH into a tombstone rather than by a tombstone row, so the reset
+    # has to undo both kinds of write to bring the corpus back.
+    assert alone["ts"] not in history(alone)
+    assert history(root)[root["ts"]]["subtype"] == "tombstone"
     admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
     oclient.post("/_meta/overlay/reset", headers=admin)
-    back = oclient.post(
-        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    assert ts in [m["ts"] for m in back]
+    assert alone["ts"] in history(alone)
+    back = history(root)[root["ts"]]
+    assert back["text"] == original and "subtype" not in back
 
 
 def test_a_write_drops_the_stale_member_count(oclient, sample_settings):

@@ -232,7 +232,9 @@ PATCHABLE = {
     # the root's own ts there (`thread_ts == ts`), and a standalone message carries NULL, so the
     # first reply has to stamp the message it answers. Not an identifier column — a slack document
     # is keyed (channel, ts) — so patching it moves nothing out from under its ACL grant.
-    "slack": frozenset({"content", "reactions", "edited", "thread_ts"}),
+    # `subtype` is here because a deleted thread root becomes a `tombstone` rather than
+    # disappearing (`chat_delete`), which is a change to the message real keeps serving.
+    "slack": frozenset({"content", "reactions", "edited", "thread_ts", "subtype"}),
 }
 
 
@@ -1390,33 +1392,38 @@ def slack_next_thread_seq(conn, channel: str, thread_ts: str) -> int:
 
 
 def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
-    """A free ``ts`` for a new Slack message in this channel at this second.
+    """A free ``ts`` for a new Slack message in this channel at this second, above every ts the
+    channel already holds in it.
 
-    Same shape and same collision rule as an imported message's (``byo._Loader._slack_ts``): the
-    integer part is the second, the six-digit fraction is probed until it is free within the
-    channel. A posted message's second is *now* and the corpus is historical, so a collision is
-    almost always with another posted message — but "almost always" is why this probes rather than
-    assumes.
+    Real orders two messages posted in one second by their fraction: eight posts in a row came
+    back strictly increasing, three of them inside one second and three inside the next (measured
+    against slack.com, 2026-10-21). An imported message takes its fraction from a hash
+    (``byo._Loader._slack_ts``), which is fine for a corpus whose order its timestamps already
+    state, but a posted message read back out of post order is a conversation replayed wrong. So
+    the first post of a second keeps the hashed fraction and each one after it takes the next
+    free fraction above the highest there.
+
+    The fractions are read off the PHYSICAL rows, not off `merged_source`, which subtracts
+    tombstones: a deleted message's row is still in `ov.slack_messages` holding its primary key,
+    so a merged read reports its ts free and the insert then fails on it. Post, delete, post
+    inside one second is an ordinary sequence, and it 500'd.
 
     Slack's own, not a generic minter: what a served id looks like is a fact about a vendor, and
     the sources that already synthesize one do it several different ways.
     """
     from backlot import overlay
 
-    attached = overlay.is_attached(conn)
-    for salt in range(synth.SLACK_TS_FRACTIONS):
-        candidate = synth.slack_fmt_ts(epoch_sec, f"post:{channel}:{epoch_sec}:{salt}")
-        # Asked of the PHYSICAL rows, not of `merged_source`, which subtracts tombstones: a
-        # deleted message's row is still in `ov.slack_messages` holding its primary key, so a
-        # merged read reports the ts free and the insert then fails on it. Post, delete, post
-        # inside one second is an ordinary sequence, and it 500'd.
-        sql = "SELECT 1 FROM main.slack_messages WHERE channel = ? AND ts = ?"
-        params = [channel, candidate]
-        if attached:
-            sql += " UNION ALL SELECT 1 FROM ov.slack_messages WHERE channel = ? AND ts = ?"
-            params += [channel, candidate]
-        if conn.execute(sql, params).fetchone() is None:
-            return candidate
+    sql = "SELECT ts FROM main.slack_messages WHERE channel = ? AND ts LIKE ?"
+    params = [channel, f"{int(epoch_sec)}.%"]
+    if overlay.is_attached(conn):
+        sql += " UNION ALL SELECT ts FROM ov.slack_messages WHERE channel = ? AND ts LIKE ?"
+        params += [channel, f"{int(epoch_sec)}.%"]
+    taken = {int(row["ts"].split(".")[1]) for row in conn.execute(sql, params)}
+
+    hashed = int(synth.slack_fmt_ts(epoch_sec, f"post:{channel}:{epoch_sec}").split(".")[1])
+    for fraction in range(max(taken) + 1 if taken else hashed, synth.SLACK_TS_FRACTIONS):
+        if fraction not in taken:
+            return f"{int(epoch_sec)}.{fraction:06d}"
     raise RuntimeError(f"slack: channel {channel!r} has no free ts fraction in second {epoch_sec}")
 
 
@@ -2875,28 +2882,61 @@ def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
     no writes has no overlay index to query, and searching it must cost nothing it did not cost
     before.
     """
+    match = _overlay_match(
+        conn, source_type, query, visible_ids, container=container, phrase=phrase
+    )
+    if match is None:
+        return []
+    sql, params = match
+    rows = conn.execute(f"SELECT o.*, f.rowid AS _ov_rowid {sql}", params).fetchall()
+    terms = _fts_query_terms(conn, source_type, query)
+    return [(r, _corpus_bm25(conn, source_type, query, r["_ov_rowid"], terms=terms)) for r in rows]
+
+
+def _overlay_match(conn, source_type, query, visible_ids, *, container, phrase):
+    """``(FROM-and-WHERE sql, params)`` selecting the overlay documents this query matches, or
+    None where there are none to select -- a source outside :data:`WRITABLE`, no overlay
+    attached, or a query FTS5 reads as matching nothing.
+
+    One statement of the match, because a search asks it twice: once for the page it serves and
+    once for the total it reports. Two spellings of one condition is a page and a total that
+    disagree.
+    """
     from backlot import overlay
 
     if source_type not in WRITABLE or not overlay.is_attached(conn):
-        return []
-    names = overlay.table_names(source_type)
-    key = id_columns(source_type)
+        return None
     m = _fts_match(query, phrase=phrase)
     if not m:
-        return []
+        return None
+    names = overlay.table_names(source_type)
+    on = " AND ".join(f"o.{c} = f.{c}" for c in id_columns(source_type))
     cont_sql, cont_p = "", []
     if container is not None:
         cont_sql, cont_p = f" AND o.{grouping_col(source_type)} = ?", [container]
     clause, cparams = _acl_clause(source_type, "o", visible_ids)
-    on = " AND ".join(f"o.{c} = f.{c}" for c in key)
-    rows = conn.execute(
-        f"SELECT o.*, f.rowid AS _ov_rowid FROM ov.{names['fts']} f "
-        f"JOIN ({merged_source(conn, source_type)}) o ON {on} "
+    return (
+        f"FROM ov.{names['fts']} f JOIN ({merged_source(conn, source_type)}) o ON {on} "
         f"WHERE f.{names['fts']} MATCH ?{cont_sql}{clause}",
         [m, *cont_p, *cparams],
-    ).fetchall()
-    terms = _fts_query_terms(conn, source_type, query)
-    return [(r, _corpus_bm25(conn, source_type, query, r["_ov_rowid"], terms=terms)) for r in rows]
+    )
+
+
+def _overlay_hit_count(conn, source_type, query, visible_ids, *, container, phrase) -> int:
+    """How many overlay documents match, for the caller that reports a total.
+
+    Counted in SQLite rather than scored: a total reads no score, so neither the row bodies nor
+    the per-row :func:`_corpus_bm25` that :func:`_overlay_hits` computes are needed to produce
+    it. With 1,500 written messages behind a `search.messages`, counting here took the call from
+    a median 991 ms to 488 ms.
+    """
+    match = _overlay_match(
+        conn, source_type, query, visible_ids, container=container, phrase=phrase
+    )
+    if match is None:
+        return 0
+    sql, params = match
+    return conn.execute(f"SELECT COUNT(*) {sql}", params).fetchone()[0]
 
 
 def _corpus_not_reindexed(conn, source_type: str, alias: str) -> str:
@@ -3073,11 +3113,12 @@ def count_search(
         )
         total = conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
         # A total the pages contradict is worse than no total: search.messages reports it verbatim
-        # as `total` and derives its page count from it.
-        hits = _overlay_hits(
+        # as `total` and derives its page count from it. `_overlay_match` is what keeps the two
+        # agreeing, since the page and this count ask it the same question.
+        written = _overlay_hit_count(
             conn, source_type, query, visible_ids, container=container, phrase=phrase
         )
-        return min(total + len(hits), cap)
+        return min(total + written, cap)
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (

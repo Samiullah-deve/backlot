@@ -126,6 +126,8 @@ TEAM_ID = "T0000BKLT"
 SERVICE_EMAIL = "service-account"
 SERVICE_USER_ID = "USERVICE0"
 BOT_ID = "B0000BKLT"
+#: What real leaves in place of a deleted thread root (measured, see `chat_delete`).
+TOMBSTONE_TEXT = "This message was deleted."
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -2009,6 +2011,14 @@ async def chat_delete(request: Request):
     A CORPUS message can be deleted. The row stays in the read-only database and is subtracted at
     read time by the overlay's tombstone, which is the only way this can work over a corpus that
     is never written.
+
+    A thread ROOT with replies still under it is not subtracted: real leaves it as a placeholder
+    so the thread stays readable. Measured against slack.com on 2026-10-21 — a deleted root came
+    back from `conversations.history` and `conversations.replies` as
+    ``subtype: "tombstone"``, ``text: "This message was deleted."``, ``hidden: true``, keeping its
+    `thread_ts`, `reply_count`, `reply_users` and `latest_reply`, with both replies intact beside
+    it; a deleted STANDALONE message came back from neither; and deleting the last reply took the
+    placeholder with it.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -2019,9 +2029,27 @@ async def chat_delete(request: Request):
     name, ts, _row, err = _own_message(request, conn, caller, "ts", "cant_delete_message")
     if err is not None:
         return err
-    store.tombstone_document(conn, "slack", (name, ts))
+    ids = auth.visible_ids(request, caller)
+    if _row["thread_seq"] == 0 and store.slack_reply_count(conn, name, ts, ids) > 0:
+        store.patch_document(conn, "slack", (name, ts), "content", TOMBSTONE_TEXT)
+        store.patch_document(conn, "slack", (name, ts), "subtype", "tombstone")
+    else:
+        store.tombstone_document(conn, "slack", (name, ts))
+        _drop_a_spent_tombstone(conn, name, _row, ids)
     _invalidate(request, name)
     return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
+
+
+def _drop_a_spent_tombstone(conn, channel: str, deleted, ids) -> None:
+    """Subtract the placeholder a deleted root left, once ``deleted`` was its last reply."""
+    root_ts = deleted["thread_ts"]
+    if not root_ts or deleted["thread_seq"] == 0:
+        return
+    root = store.document_by_key(conn, "slack", (channel, root_ts))
+    if root is None or root["subtype"] != "tombstone":
+        return
+    if store.slack_reply_count(conn, channel, root_ts, ids) == 0:
+        store.tombstone_document(conn, "slack", (channel, root_ts))
 
 
 @router.api_route(
@@ -2032,8 +2060,7 @@ async def chat_get_permalink(request: Request):
 
     Errors quoted from the spec's ``default`` response: `channel_not_found`, `message_not_found`.
 
-    The path is Slack's own shape — ``/archives/<channel id>/p<ts with the dot removed>`` — so a
-    permalink Backlot mints parses the way a real one does.
+    The link itself is `_permalink`'s, which also names the thread a threaded message is in.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -2045,16 +2072,32 @@ async def chat_get_permalink(request: Request):
     if err is not None:
         return err
     ts = _param(request, "message_ts") or ""
-    if store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller)) is None:
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
         return _err("message_not_found")
-    cid = synth.slack_channel_id(name)
     return {
         "ok": True,
-        "channel": cid,
-        "permalink": (
-            f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}"
-        ),
+        "channel": synth.slack_channel_id(name),
+        "permalink": _permalink(name, row),
     }
+
+
+def _permalink(channel_name: str, row) -> str:
+    """A message's archive URL.
+
+    The path is Slack's own shape -- ``/archives/<channel id>/p<ts with the dot removed>`` -- so
+    a permalink Backlot mints parses the way a real one does. A message in a THREAD also carries
+    ``?thread_ts=<root>&cid=<channel id>``, which is how a client opens the thread rather than
+    the channel: measured against slack.com on 2026-10-21, a thread root and a reply both carried
+    the query and a standalone message carried none.
+    """
+    cid = synth.slack_channel_id(channel_name)
+    link = (
+        f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{row['ts'].replace('.', '')}"
+    )
+    if row["thread_ts"]:
+        link += f"?thread_ts={row['thread_ts']}&cid={cid}"
+    return link
 
 
 def _same_address(a: str, b: str) -> bool:
@@ -2232,7 +2275,11 @@ async def reactions_get(request: Request):
         "ok": True,
         "type": "message",
         "channel": synth.slack_channel_id(name),
-        "message": _message(row),
+        # `permalink` rides on the message here and on `reactions.list`, and on no other method
+        # that answers one: measured against slack.com on 2026-10-21, `conversations.history` and
+        # `conversations.replies` carry none. So it goes on at these two call sites rather than
+        # in `_message`, which all of them share.
+        "message": _message(row) | {"permalink": _permalink(name, row)},
     }
 
 
@@ -2296,7 +2343,7 @@ async def reactions_list(request: Request):
             {
                 "type": "message",
                 "channel": synth.slack_channel_id(p["channel"]),
-                "message": _message(row),
+                "message": _message(row) | {"permalink": _permalink(p["channel"], row)},
             }
         )
     limit = counts["limit"] if counts["limit"] > 0 else get_settings().default_page_size
@@ -2518,6 +2565,11 @@ def _message(
         m["edited"] = _edited(edited)
     if row["subtype"]:
         m["subtype"] = row["subtype"]
+    if row["subtype"] == "tombstone":
+        # The placeholder a deleted root leaves carries neither the poster's `team` nor anything
+        # the message said, and a client hides it from the channel on `hidden`.
+        m["hidden"] = True
+        m.pop("team", None)
     if row["thread_ts"]:  # part of a thread
         m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root

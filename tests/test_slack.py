@@ -4153,25 +4153,56 @@ def test_a_deleted_message_leaves_every_read(wclient, tokens):
 def test_a_corpus_message_can_be_deleted_by_its_author(wclient, tokens, ro_conn):
     # The tombstone has to work over a row that lives in the READ-ONLY corpus, not only over one
     # the overlay wrote. That is the case the corpus cannot express by deletion.
-    email, channel, ts = ro_conn.execute(
-        "SELECT author_email, channel, ts FROM slack_messages WHERE channel = 'incidents' LIMIT 1"
+    #
+    # Both shapes, because `chat_delete` answers them differently and the corpus holds both: a
+    # message with no replies goes, and a thread root stays as the placeholder real leaves.
+    alone = _a_corpus_message(ro_conn, "thread_ts IS NULL")
+    root = _a_corpus_message(ro_conn, "thread_ts = ts")
+
+    def history(email, channel):
+        return {
+            m["ts"]: m
+            for m in wclient.post(
+                "/slack/api/conversations.history",
+                headers=_uh(tokens, email),
+                data={"channel": synth.slack_channel_id(channel), "limit": 200},
+            ).json()["messages"]
+        }
+
+    for email, channel, ts in (alone, root):
+        assert ts in history(email, channel)
+        assert (
+            wclient.post(
+                "/slack/api/chat.delete",
+                headers=_uh(tokens, email),
+                data={"channel": synth.slack_channel_id(channel), "ts": ts},
+            ).json()["ok"]
+            is True
+        )
+
+    assert alone[2] not in history(alone[0], alone[1])
+    email, channel, ts = root
+    left = history(email, channel)[ts]
+    assert left["subtype"] == "tombstone" and left["hidden"] is True
+    assert left["text"] == slack.TOMBSTONE_TEXT and "team" not in left
+    # And the thread it rooted is still readable, which is the point of keeping it.
+    thread = wclient.post(
+        "/slack/api/conversations.replies",
+        headers=_uh(tokens, email),
+        data={"channel": synth.slack_channel_id(channel), "ts": ts},
+    ).json()
+    assert thread["ok"] is True and len(thread["messages"]) > 1
+
+
+def _a_corpus_message(ro_conn, shape: str) -> tuple[str, str, str]:
+    """``(author, channel, ts)`` of a corpus message of this shape. The sample corpus holds one
+    threaded channel and two standalone messages, in different channels, so neither row can be
+    asked for by naming a channel."""
+    row = ro_conn.execute(
+        f"SELECT author_email, channel, ts FROM slack_messages WHERE {shape} LIMIT 1"
     ).fetchone()
-    h = _uh(tokens, email)
-    cid = synth.slack_channel_id(channel)
-    before = wclient.post(
-        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    assert ts in [m["ts"] for m in before]
-    assert (
-        wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts}).json()[
-            "ok"
-        ]
-        is True
-    )
-    after = wclient.post(
-        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    assert ts not in [m["ts"] for m in after]
+    assert row is not None, shape
+    return row["author_email"], row["channel"], row["ts"]
 
 
 def test_the_service_token_cannot_delete_a_persons_message(wclient, tokens, admin_h):

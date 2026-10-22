@@ -9801,6 +9801,8 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
         ("range,majorDimension", {"range": "Summary!A1:B2", "majorDimension": "ROWS"}),
         # a trailing comma is tolerated, measured
         ("range,", {"range": "Summary!A1:B2"}),
+        # a run of `*` under a field holding no message is all of it
+        ("range.*.*", {"range": "Summary!A1:B2"}),
         ("*", None),
     ],
 )
@@ -9838,21 +9840,12 @@ _BOOK_KEYS = ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
         ("spreadsheetId,*", ["spreadsheetId"]),
         ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
         ("*.title", ["properties"]),
+        # a run of `*` under a field holding no message is all of it
+        ("*.*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+        ("spreadsheetId.*.*", ["spreadsheetId"]),
         # an empty group names nothing
         ("a()", _BOOK_KEYS),
         ("spreadsheetId,sheets()", ["spreadsheetId"]),
-    ],
-)
-def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
-    """Each row as real answered it, as `_gmask_select` records."""
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
-    assert r.status_code == 200, r.text
-    assert list(r.json()) == want
-
-
-@pytest.mark.parametrize(
-    "mask, want",
-    [
         ("sheets(merges,conditionalFormats)", {"sheets": [{}]}),
         ("sheets.properties.hidden", {"sheets": [{"properties": {}}]}),
         ("sheets.*.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
@@ -9924,16 +9917,14 @@ def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
         ),
     ],
 )
-def test_a_mask_projects_a_ragged_sheet_as_real_does(gc, gh, book, mask, want):
-    """The rules `_gmask_tree` and `_gmask_trim_rows` record, over `Ragged`, whose rows hold a gap,
-    nothing at all, one cell and a cell after two gaps."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"fields": mask, "ranges": "Ragged!A1:C4"},
-    )
+def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
+    """Each row as real answered it, as `_gmask_select` records: its keys, or for a row whose
+    `want` is a body, the whole answer over `Ragged`, whose rows hold a gap, nothing at all, one
+    cell and a cell after two gaps, as `_gmask_tree` and `_gmask_trim_rows` read it."""
+    params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
     assert r.status_code == 200, r.text
-    assert r.json() == want
+    assert (r.json() if isinstance(want, dict) else list(r.json())) == want
 
 
 def test_fields_reaches_through_the_sheets_list(gc, gh, book):
@@ -10895,38 +10886,79 @@ def dana(grid_settings):
 
 
 @pytest.mark.parametrize(
-    "mode, fields, owner, status, want",
+    "route, mode, fields, owner, status, want",
     [
-        (None, None, True, 200, None),
-        (None, "commentsViewMode", False, 200, _OMITTED),
-        ("COMMENTS_VIEW_MODE_UNSPECIFIED", "commentsViewMode", True, 200, _OMITTED),
-        ("COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", None, True, 200, None),
-        ("COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", "commentsViewMode", True, 200, _INCLUDED),
-        ("COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", "commentsViewMode", False, 200, _OMITTED),
-        ("COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", True, 200, _INCLUDED),
-        ("COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", False, 403, _NO_PERMISSION),
-        ("+1", "commentsViewMode", True, 200, _INCLUDED),
-        ("03", "commentsViewMode", True, 200, _INCLUDED),
-        ("comments_view_mode_included", "commentsViewMode", True, 200, _INCLUDED),
-        ("COMMENTS_VIEW_MODE_OMITTED", "comments", True, 400, _NO_COMMENTS),
-        (None, "comments.headPost", True, 400, _NO_COMMENTS),
-        (None, "*.commentId", True, 400, _NO_COMMENTS),
-        (None, "*.*", True, 200, _OMITTED),
-        ("COMMENTS_VIEW_MODE_INCLUDED", "comments", True, 200, None),
-        ("COMMENTS_VIEW_MODE_INCLUDED", "comments", False, 403, _NO_PERMISSION),
-        ("COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", "comments.commentId", False, 200, None),
-        ("4", None, True, 400, None),
-        ("", None, True, 400, None),
+        ("get", None, None, True, 200, None),
+        ("get", None, "commentsViewMode", False, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_UNSPECIFIED", "commentsViewMode", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", None, True, 200, None),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            True,
+            200,
+            _INCLUDED,
+        ),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            False,
+            200,
+            _OMITTED,
+        ),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", False, 403, _NO_PERMISSION),
+        ("get", "+1", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "03", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "comments_view_mode_included", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_OMITTED", "comments", True, 400, _NO_COMMENTS),
+        ("get", None, "comments.headPost", True, 400, _NO_COMMENTS),
+        ("get", None, "*.commentId", True, 400, _NO_COMMENTS),
+        ("get", None, "*.*", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", True, 200, None),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", False, 403, _NO_PERMISSION),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "comments.commentId",
+            False,
+            200,
+            None,
+        ),
+        ("get", "4", None, True, 400, None),
+        ("get", "", None, True, 400, None),
+        ("getByDataFilter", None, "comments", True, 400, _NO_COMMENTS),
+        ("getByDataFilter", 3, "comments", True, 200, None),
+        ("getByDataFilter", 3, "comments", False, 403, _NO_PERMISSION),
+        ("getByDataFilter", "1", "commentsViewMode", True, 200, _INCLUDED),
+        ("getByDataFilter", "1", "commentsViewMode", False, 200, _OMITTED),
+        # a number the enum does not declare is taken, and answered as no comments
+        ("getByDataFilter", 4, "commentsViewMode", False, 200, _OMITTED),
+        ("getByDataFilter", 4, "comments", False, 200, None),
+        ("getByDataFilter", -1, "comments", True, 200, None),
     ],
 )
 def test_comments_view_mode_is_read_as_real_reads_it(
-    gc, gh, dana, book, mode, fields, owner, status, want
+    gc, gh, dana, book, route, mode, fields, owner, status, want
 ):
-    """`spreadsheets.get`'s `commentsViewMode` (`_sheets_comments_view`), each row as real answered
-    it to the spreadsheet's owner or a reader. With no mask it shows only beside the grid: a mode
-    alone answers none."""
-    params = {k: v for k, v in (("commentsViewMode", mode), ("fields", fields)) if v is not None}
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=dana if owner else gh, params=params)
+    """`commentsViewMode` (`_sheets_comments_view`) in `spreadsheets.get`'s query and in
+    `:getByDataFilter`'s body, each row as real answered it to the spreadsheet's owner or a reader.
+    With no mask it shows only beside the grid: a mode alone answers none."""
+    headers = dana if owner else gh
+    params = {} if fields is None else {"fields": fields}
+    if route == "get":
+        params |= {} if mode is None else {"commentsViewMode": mode}
+        r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=headers, params=params)
+    else:
+        body = {} if mode is None else {"commentsViewMode": mode}
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=headers,
+            params=params,
+            json=body,
+        )
     assert r.status_code == status, r.text
     if status != 200:
         message = want or (
@@ -10936,36 +10968,8 @@ def test_comments_view_mode_is_read_as_real_reads_it(
         assert r.json()["error"]["message"] == message
     else:
         assert r.json().get("commentsViewMode") == want
-
-
-@pytest.mark.parametrize(
-    "mode, fields, owner, status, want",
-    [
-        (None, "comments", True, 400, _NO_COMMENTS),
-        (3, "comments", True, 200, {}),
-        (3, "comments", False, 403, _NO_PERMISSION),
-        ("1", "commentsViewMode", True, 200, {"commentsViewMode": _INCLUDED}),
-        ("1", "commentsViewMode", False, 200, {"commentsViewMode": _OMITTED}),
-        # a number the enum does not declare is taken, and answered as no comments
-        (4, "commentsViewMode", False, 200, {"commentsViewMode": _OMITTED}),
-        (4, "comments", False, 200, {}),
-        (-1, "comments", True, 200, {}),
-    ],
-)
-def test_comments_view_mode_in_the_body_is_read_as_real_reads_it(
-    gc, gh, dana, book, mode, fields, owner, status, want
-):
-    """`:getByDataFilter`'s `commentsViewMode`, each row as real answered it
-    (`_sheets_comments_view`)."""
-    body = {} if mode is None else {"commentsViewMode": mode}
-    r = gc.post(
-        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
-        headers=dana if owner else gh,
-        params={"fields": fields},
-        json=body,
-    )
-    assert r.status_code == status, r.text
-    assert (r.json()["error"]["message"] if status != 200 else r.json()) == want
+        if fields is not None and "commentsViewMode" not in fields and "*" not in fields:
+            assert r.json() == {}
 
 
 _INCLUDE = {"commentsViewMode": "COMMENTS_VIEW_MODE_INCLUDED"}

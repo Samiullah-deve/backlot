@@ -314,15 +314,13 @@ class TypesTarget(Protocol):
 
 def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) -> Measurement:
     """The messages the methods a walk asked answer with, and every message they reach, measured
-    against what a running Backlot served.
+    against what a running Backlot served, with the statuses ``docs/fidelity.md`` gives a Google
+    source's `types`.
 
-    Every one of them is listed, with every field and what it holds, whether or not Backlot serves
-    it: a `fields` mask is read against the whole of each (`backlot.routers.google._gmask_select`),
-    so the baseline has to carry it offline. A message one of the walk's answers was, or held, is
-    `implemented`, each field it carried `implemented` and each it did not `missing`, a gap. A
-    message none of them was is `missing` and its fields with it, with no finding, as a GraphQL
-    source reports none for a vendor type Backlot does not declare; it is listed only because a
-    mask reaches it. A field the vendor does not declare is `extra`, and breaking."""
+    Every one of them is listed whether or not Backlot serves it, where a GraphQL source lists none
+    of the vendor's types Backlot does not declare: a `fields` mask is read against the whole of
+    each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline. A field
+    the vendor does not declare is `extra`, and breaking."""
     types = declared_types(doc)
     answers = {o.id: o.response for o in from_google_discovery(doc).values() if o.response}
     walked: list[tuple[str, Any]] = spec.walk(timeout) if spec.walk else []

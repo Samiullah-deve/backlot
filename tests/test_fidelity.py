@@ -502,12 +502,8 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
 def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatch):
     """A discovery document describes operations under `resources`, a batch endpoint in its
     top-level `batchPath` and, for a document a walk reads, the messages its methods answer with
-    under `schemas`, and a Google source reads it once for all three.
-
-    The types (`google_discovery_diff.types_measure`): every message an answer reaches, each field
-    with what it holds. A message the walk read is `implemented`, a field it carried `implemented`
-    and one it did not a `missing_field` gap; a message no answer reached is `missing` with no
-    finding; a map is a leaf."""
+    under `schemas` (`google_discovery_diff.types_measure`), and a Google source reads it once for
+    all three."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",

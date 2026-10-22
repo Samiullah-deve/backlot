@@ -3868,13 +3868,15 @@ def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
     A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is
     `sheets.properties.title`, `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the
     row count is three names under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a
-    path selects all of what it is under, a field holding no message included -- `spreadsheetId.*`
-    and a map's `criteria.*` answered -- and is kept as the ``"*"`` key, which `_gmask_tree` reads."""
+    path selects all of what it is under, a field holding no message included, and so does a run
+    of them: `spreadsheetId.*`, `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered,
+    where `spreadsheetId.*.x` names nothing. One ending a path is kept as the ``"*"`` key, which
+    `_gmask_tree` reads."""
     if not path:
         return {}
     head, rest = path[0], path[1:]
     if message is None:
-        return {} if path == ("*",) else None
+        return {} if all(name == "*" for name in path) else None
     fields = _SHEETS_FIELDS[message]
     if head == "*":
         if not rest:
@@ -3993,6 +3995,8 @@ def _sheets_alt(request: Request) -> None:
     does not exist. An `alt` that names one is `_sheets_respond`'s, after the read has run."""
     alt = gerr.alt_format(request.query_params)
     if alt and alt not in ("json", "media", "proto"):
+        # Through the spelling that arrived, not the folded one: measured 2026-09-17 on Sheets,
+        # `alt=ZZZ` answers `Invalid value "ZZZ"`.
         raise gerr.invalid_argument(
             "Invalid value \"{}\" for query parameter 'alt'".format(
                 gerr.first_repeat(request.query_params, gerr.ALT)
@@ -4026,15 +4030,11 @@ def _sheets_respond(request: Request, body: dict, tree: dict | None) -> Response
     # see one `alt` in both places.
     alt = gerr.alt_format(request.query_params)
     if alt and alt != "json":
-        # `media` or `proto`, `_sheets_alt` having refused the rest. `media` gets its own sentence
-        # and `proto` the one `_sheets_alt` gives: real answers it with a protobuf body ("Proto
-        # over HTTP is not allowed for service …") under `application/x-protobuf`, a format this
-        # module does not serve.
-        #
-        # The two sentences quote different spellings, measured 2026-09-17 on Sheets: `alt=MEDIA`
-        # answers `Unsupported alt type "media"` with the format lowercased, while `alt=ZZZ`
-        # answers `Invalid value "ZZZ"` through the spelling that arrived. So the generic one
-        # reads the parameter again rather than reusing the folded value.
+        # `media` or `proto`, `_sheets_alt` having refused the rest. `media` gets its own sentence,
+        # the format lowercased: measured 2026-09-17 on Sheets, `alt=MEDIA` answers `Unsupported
+        # alt type "media"`. `proto` gets the one `_sheets_alt` gives: real answers it with a
+        # protobuf body ("Proto over HTTP is not allowed for service …") under
+        # `application/x-protobuf`, a format this module does not serve.
         raise gerr.invalid_argument(
             f'Unsupported alt type "{alt}" for non byte stream request.'
             if alt == "media"
@@ -4070,8 +4070,8 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     whole grid would hand a reader cells the real API never would, so the document it assembles
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    # `alt`, the credential, the typed values, the mask, then the lookup -- `_typed_query` records
-    # the order of the middle two.
+    # `alt` (`_sheets_alt`), the credential and the typed values (`_typed_query`), the mask
+    # (`_sheets_mask`), then the lookup.
     _sheets_alt(request)
     caller = _require(request)
     flags = _typed_query(

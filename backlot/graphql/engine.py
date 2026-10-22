@@ -200,7 +200,9 @@ class Engine:
         # is what separates them from a non-null field error that propagated up to the root.
         if result.data is None and result.errors and all(e.path is None for e in result.errors):
             return _request_error(list(result.errors))
-        return Result(payload=result.formatted)
+        # graphql-core's ExecutionResult.formatted writes "data" first; the real Fireflies and
+        # Linear APIs open an error response with "errors", so flip the two members here.
+        return Result(payload=dict(reversed(list(result.formatted.items()))))
 
     def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
         """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has

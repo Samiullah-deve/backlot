@@ -3244,17 +3244,25 @@ def search_documents(
         # corpus_only: this join is against the CORPUS index, which cannot match an overlay row.
         src = merged_source(conn, source_type, alias="t", corpus_only=True)
         fresh = _corpus_not_reindexed(conn, source_type, "t")
-        sql = (
-            f"SELECT t.*, {fts}.rank AS _rank FROM {fts} JOIN {src} ON {on} "
-            f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause}{fresh} "
-            f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
-        )
         params = [m, *cont_p, *cparams, *order_p]
         hits = _overlay_hits(
             conn, source_type, query, visible_ids, container=container, phrase=phrase
         )
+
+        def _select(extra: str) -> str:
+            return (
+                f"SELECT t.*{extra} FROM {fts} JOIN {src} ON {on} "
+                f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause}{fresh} "
+                f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
+            )
+
         if not hits:
-            return [_without(r, "_rank") for r in conn.execute(sql, [*params, limit, offset])]
+            # The rank is only wanted to merge against, so with nothing to merge the query is
+            # the one every source ran before writes existed -- no extra column, and no dict
+            # copy per row to strip it again. Confluence asks for 100,000 rows at a time and
+            # GitHub for 10,000, and neither has an overlay at all.
+            return conn.execute(_select(""), [*params, limit, offset]).fetchall()
+        sql = _select(f", {fts}.rank AS _rank")
         # Both sides on one scale. Corpus rows keep the rank SQLite computed -- re-scoring them
         # would be a second implementation of a ranking that was already right -- and each overlay
         # row carries the score `_corpus_bm25` gave it against the same statistics.

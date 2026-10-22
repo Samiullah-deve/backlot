@@ -1957,31 +1957,6 @@ def _writer(caller: Caller) -> tuple[str, str, bool]:
     return caller.email, synth.slack_user_id(caller.email), False
 
 
-def _invalidate(request: Request, channel: str) -> None:
-    """Drop the warm-cache entries a write to this channel invalidates.
-
-    Deletion, not recomputation: `_member_count` treats a missing key as "not warm" and counts
-    that one channel, so dropping the key is the whole of the fix and costs one query on the next
-    read of it.
-
-    The channel is also recorded, because the cache may not exist yet: the warm-up builds its map
-    from the corpus and publishes it whole, so a write during that window would be undone when it
-    lands. `app.state.invalidated_channels` is what the warm-up re-applies.
-
-    `doc_counts` is deliberately NOT touched. It is the corpus-wide per-source count `/health`
-    reports, nothing recomputes it after startup, and `main.py` says outright that "only `ok` with
-    null counts is wrong" — so clearing it put the server in exactly that state for its lifetime
-    on the first write. A served write does not change how many documents the CORPUS holds, which
-    is what that number means.
-    """
-    invalidated = getattr(request.app.state, "invalidated_channels", None)
-    if invalidated is not None:
-        invalidated.add(channel)
-    members = getattr(request.app.state, "channel_members", None)
-    if members is not None:
-        members.pop(channel, None)
-
-
 def _writable_channel(request: Request, conn, caller: Caller, *, by_name: bool = False):
     """``(channel_name, None)`` for a channel this caller may write to, else ``(None, error)``.
 
@@ -2104,7 +2079,6 @@ async def chat_post_message(request: Request):
             "subtype": None,
         },
     )
-    _invalidate(request, name)
     row = store.document_by_key(conn, "slack", (name, ts))
     return {
         "ok": True,
@@ -2281,7 +2255,6 @@ async def chat_delete(request: Request):
     else:
         store.tombstone_document(conn, "slack", (name, ts))
         _unthread_a_spent_root(conn, name, _row, ids)
-    _invalidate(request, name)
     return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
 
 
@@ -2791,9 +2764,14 @@ def _member_count(request: Request, conn, name: str) -> int:
     finished, count this one channel directly rather than blocking on all of them.
 
     A MISSING key is counted, not answered as zero. `slack_channel_member_counts` keys every
-    channel, including one with no messages at all, so the only way a key is absent from a filled
-    cache is that a write dropped it (`_invalidate`) — and reporting that channel as empty is how
-    a posted message made `num_members` collapse to 0.
+    channel, including one with no messages at all, so a key is absent only while the cache is
+    still being built; reading an absent key as zero would answer `num_members: 0` for a channel
+    that has members.
+
+    Nothing invalidates this cache, because no write moves what it holds: a public channel's
+    members are the speakers in `main.slack_messages`, which a written row never joins, and a
+    private channel's are the grantees a written row's own grants were copied from. Measured
+    both ways, over a post and over a delete, on a public channel and a private one.
     """
     cache = getattr(request.app.state, "channel_members", None)
     if cache is not None and name in cache:

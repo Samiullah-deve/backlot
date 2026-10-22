@@ -288,16 +288,17 @@ def test_reset_restores_a_deleted_corpus_message(oclient, sample_settings, ro_co
     assert back["text"] == original and "subtype" not in back
 
 
-def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
-    # `num_members` is answered from a warm cache in preference to a query, so a write has to drop
-    # the entry or conversations.list keeps reporting the count from before it.
+def test_a_write_does_not_move_the_member_count(oclient, sample_settings):
+    # `num_members` is answered from a warm cache in preference to a query, and nothing
+    # invalidates it: `slack._member_count` records why no write moves what it holds. This is
+    # the assertion that would catch a reader starting to count written rows.
     from backlot import synth
 
     tokens = _tokens(sample_settings)
     admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
     cid = synth.slack_channel_id("eng-announcements")
-    # The cache has to be published before this can be about dropping a key from it; the
-    # unpublished window is its own test above.
+    # Published, so this is about the cache rather than about the window before it exists, which
+    # is its own test above.
     oclient.app.state.warm_thread.join(10)
 
     def num_members():
@@ -307,24 +308,29 @@ def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
     before = num_members()
     h = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}
     oclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "new"})
-    # A post does not change who is in the channel, so the count must not move -- but it has to
-    # be recomputed to know that, rather than served from a cache that happens to agree.
+    assert num_members() == before
+    # And a delete does not either, which is the other half of the reason nothing invalidates.
+    ts = oclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "and gone"}
+    ).json()["ts"]
+    oclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts})
     assert num_members() == before
 
 
-def test_the_warm_up_does_not_undo_a_write_that_landed_while_it_ran(sample_settings, monkeypatch):
-    """The warm-up builds its member-count map from the corpus and publishes it whole, so a write
-    during that window would be undone the moment it lands.
+def test_the_warm_up_answers_the_same_count_before_and_after_it_publishes(
+    sample_settings, monkeypatch
+):
+    """A write while the warm-up is still building must not change what `conversations.list`
+    answers, before or after the map lands.
 
     Held open rather than raced: `slack_channel_member_counts` is swapped for one that blocks, so
-    the write happens with the cache still unpublished every run. Without the re-application in
-    `_warm_caches`, `conversations.list` answers the pre-write count for the life of the server —
-    which is what a CI runner slow enough to lose the race saw.
+    the write happens with the cache still unpublished every run. The count is the corpus's
+    either way — `slack._member_count` records why no write moves it — and this is what would
+    catch a reader that started taking written rows into the number without the cache following.
     """
     import threading
 
     from backlot import synth
-    from backlot.routers.slack import _invalidate
 
     release, entered = threading.Event(), threading.Event()
     real = store.slack_channel_member_counts
@@ -350,11 +356,14 @@ def test_the_warm_up_does_not_undo_a_write_that_landed_while_it_ran(sample_setti
             page = client.post("/slack/api/conversations.list", headers=admin, data={"limit": 200})
             return [c["num_members"] for c in page.json()["channels"] if c["id"] == cid][0]
 
-        request = type("_Req", (), {"app": app})()
-        _invalidate(request, "eng-announcements")
-        counted = num_members()
+        before = num_members()
+        client.post(
+            "/slack/api/chat.postMessage",
+            headers=admin,
+            data={"channel": cid, "text": "while the warm-up runs"},
+        )
+        assert num_members() == before
 
         release.set()
         app.state.warm_thread.join(10)
-        # The published map must not put the stale count back over the invalidated channel.
-        assert num_members() == counted
+        assert num_members() == before

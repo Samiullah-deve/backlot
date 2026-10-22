@@ -99,12 +99,6 @@ async def lifespan(app: FastAPI):
     app.state.channel_acl = None
     app.state.channel_members = None
     app.state.msteams_channel_acl = None
-    # Channels a write has invalidated. The warm-up below builds its map from the corpus alone and
-    # publishes it whole, so without this a write that landed while it was building would be
-    # undone the moment it finished — `conversations.list` answering the pre-write count for the
-    # life of the server. A set rather than a flag: dropping the whole map would put every channel
-    # on the per-channel query the map exists to avoid.
-    app.state.invalidated_channels = set()
 
     app.state.warm_error = None
 
@@ -138,15 +132,7 @@ async def lifespan(app: FastAPI):
                     src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                     for src, tbl in store.SOURCE_TABLE.items()
                 }
-                # `slack_channel_member_counts`, not the generic reader it wraps: the wrapper
-                # is what applies a written membership, and the map this publishes is what
-                # `conversations.list` answers from.
-                #
-                # Published first, then the invalidations re-applied: a write between the two
-                # pops from the map that is already live, so neither order loses one.
                 app.state.channel_members = store.slack_channel_member_counts(c)
-                for channel in list(app.state.invalidated_channels):
-                    app.state.channel_members.pop(channel, None)
             finally:
                 c.close()
         except Exception as e:  # noqa: BLE001 — a warm-up must not be able to kill the server
@@ -1284,11 +1270,8 @@ def meta_overlay_reset(request: Request):
     """
     _require_admin(request)
     overlay.reset(app.state.conn, app.state.overlay_name)
-    # The per-channel member counts were computed against the pre-write corpus and are correct for
-    # it again, so the cache is rebuilt rather than left holding a written channel's number, and
-    # the invalidations it would have re-applied go with the writes that caused them.
-    app.state.channel_members = None
-    app.state.invalidated_channels = set()
+    # The member-count cache is left alone: it holds the corpus's own counts, which a write
+    # never moved (`slack._member_count`), so a reset has nothing to put back.
     return {"ok": True}
 
 

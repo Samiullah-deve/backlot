@@ -8,10 +8,10 @@ No maintained Slack MCP server accepts a base-URL override (they hard-wire slack
 from GET /_meta/users).
 
 The bridge serves the WRITE methods too, so the agent is given a task it has to act to finish
-rather than a question it can only answer: it finds the incident, replies in the thread and
-reacts. What it did is then read back from `/_meta/overlay` — the record an evaluation grades,
-and the reason the writes land in an overlay instead of the corpus (see docs/overlay.md).
-`--read-only` asks the retrieval question instead.
+rather than a question it can only answer: it finds the incident, finds the runbook, replies in
+the thread and reacts — retrieval included, since it cannot write the reply without reading both
+messages first. What it did is then read back from `/_meta/overlay`, the record an evaluation
+grades and the reason the writes land in an overlay instead of the corpus (see docs/overlay.md).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -46,14 +46,10 @@ CORPUS = [
         "content": "on-call runbook — latency spike after a deploy: check dashboards, roll back, page on-call.",
     },
 ]
-QUESTION = (
-    "Search Slack for the checkout latency incident and summarize it, then find the on-call "
-    "runbook message. Cite the channels."
-)
 TASK = (
     "Search Slack for the checkout latency incident. Reply in that message's thread with a "
     "one-line summary and the next step from the on-call runbook, and add an :eyes: reaction to "
-    "the incident message itself."
+    "the incident message itself. Cite the channels you read."
 )
 
 
@@ -88,11 +84,6 @@ def _parse_args() -> argparse.Namespace:
         default="anthropic",
         help="which LLM agent to run (default: anthropic)",
     )
-    p.add_argument(
-        "--read-only",
-        action="store_true",
-        help="ask the retrieval question instead of giving the agent a task to act on",
-    )
     return p.parse_args()
 
 
@@ -125,6 +116,5 @@ if __name__ == "__main__":
         if args.user:
             print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
         params = build_params(s.base_url, args.user)
-        run_agent(args.agent, params, QUESTION if args.read_only else TASK)
-        if not args.read_only:
-            report_writes(s.base_url)
+        run_agent(args.agent, params, TASK)
+        report_writes(s.base_url)

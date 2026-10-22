@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Read and write Slack through the official slack_sdk. Self-contained: run it directly.
 
-The write half posts, searches, reacts, edits and deletes, then reads back what the server
-recorded. Nothing reaches the corpus file: writes land in an in-memory overlay that lives and
-dies with the server, which is what lets one evaluation run start where the last one did. See
-docs/overlay.md.
+One run exercises the whole surface: the reads, then all nine write methods, then the two
+`/_meta/overlay` routes an evaluation uses. Nothing reaches the corpus file — writes land in an
+in-memory overlay that dies with the server, and the reset at the end puts the corpus back, which
+is what lets one evaluation run start where the last one did. See docs/overlay.md.
 
 pip install -e ".[official-sdk]"
 python examples/using-official-sdk/slack.py            # or: --url http://localhost:8000
 python examples/using-official-sdk/slack.py --url http://localhost:8000 --token <usr-token>
-python examples/using-official-sdk/slack.py --read-only
 """
 
 import argparse
@@ -50,7 +49,7 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read Slack through the official slack_sdk against Backlot."
+    description="Read and write Slack through the official slack_sdk against Backlot."
 )
 _p.add_argument(
     "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
@@ -60,8 +59,19 @@ _p.add_argument(
     help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
-_p.add_argument("--read-only", action="store_true", help="read the corpus and skip the write half")
 args = _p.parse_args()
+
+
+def meta(base_url: str, path: str, token: str | None = None) -> dict:
+    """GET or POST a `/_meta` route. Reset is the one that takes the admin token, so it is passed
+    explicitly rather than taken from the client, which may be answering as somebody else."""
+    request = urllib.request.Request(f"{base_url}/_meta/{path}")
+    if token is not None:
+        request.add_header("Authorization", f"Bearer {token}")
+        request.data = b""
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
 
 with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
@@ -73,45 +83,66 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print("no channels visible to this identity")
         raise SystemExit(0)
 
-    channel = channels[0]
-    messages = client.conversations_history(channel=channel["id"], limit=10)["messages"]
-    print(f"{len(channels)} channels; #{channel['name']} has these recent messages:")
-    for m in messages:
+    channel = channels[0]["id"]
+    name = channels[0]["name"]
+
+    def history() -> list[dict]:
+        return client.conversations_history(channel=channel, limit=50)["messages"]
+
+    before = history()
+    print(f"{len(channels)} channels; #{name} has {len(before)} message(s):")
+    for m in before:
         print(f"  - {m['text'].splitlines()[0]}")
 
-    if args.read_only:
-        raise SystemExit(0)
+    print(f"\nwriting to #{name}")
+    root = client.chat_postMessage(channel=channel, text="Deploy freeze lifted.")["ts"]
+    reply = client.chat_postMessage(channel=channel, text="Shipping now.", thread_ts=root)["ts"]
+    thread = client.conversations_replies(channel=channel, ts=root)["messages"]
+    print(f"  posted {root}, replied in its thread → conversations.replies returns {len(thread)}")
 
-    print(f"\nwriting to #{channel['name']}")
-    ts = client.chat_postMessage(channel=channel["id"], text="Deploy freeze lifted.")["ts"]
-    print(f"  posted {ts}")
+    # A reply's permalink names the thread it is in, as real's does.
+    print(
+        f"  permalink: {client.chat_getPermalink(channel=channel, message_ts=reply)['permalink']}"
+    )
 
     # A written message is a message: the reads find it under the same ACL as the corpus around
     # it, search included -- which is the part a mock usually gets wrong.
     matches = client.search_messages(query="freeze")["messages"]["matches"]
+    print(f"  search 'freeze' finds the new message: {root in [m['ts'] for m in matches]}")
+
+    client.reactions_add(channel=channel, timestamp=root, name="tada")
+    reacted = client.reactions_get(channel=channel, timestamp=root)["message"]
+    listed = client.reactions_list()["items"]
     print(
-        f"  search for 'freeze' matches {len(matches)}, including the new one: "
-        f"{ts in [m['ts'] for m in matches]}"
+        f"  reacted → {[(r['name'], r['count']) for r in reacted['reactions']]}, "
+        f"reactions.list has {len(listed)} item(s) of this caller's own"
     )
+    client.reactions_remove(channel=channel, timestamp=root, name="tada")
+    cleared = client.reactions_get(channel=channel, timestamp=root)["message"]
+    print(f"  removed → reactions: {cleared.get('reactions', [])}")
 
-    client.reactions_add(channel=channel["id"], timestamp=ts, name="tada")
-    reacted = client.reactions_get(channel=channel["id"], timestamp=ts)["message"]
-    print(f"  reactions: {[(r['name'], r['count']) for r in reacted['reactions']]}")
-
-    client.chat_update(channel=channel["id"], ts=ts, text="Deploy freeze lifted - ship away.")
-    edited = next(
-        m
-        for m in client.conversations_history(channel=channel["id"], limit=10)["messages"]
-        if m["ts"] == ts
-    )
+    client.chat_update(channel=channel, ts=root, text="Deploy freeze lifted - ship away.")
+    edited = next(m for m in history() if m["ts"] == root)
     print(f"  edited to {edited['text']!r}, stamped by {edited['edited']['user']}")
 
-    # What the server recorded, which is what an evaluation's grader reads.
-    with urllib.request.urlopen(f"{s.base_url}/_meta/overlay") as response:
-        overlay = json.load(response)
-    rows = {name: len(table) for name, table in overlay.items() if table}
-    print(f"  /_meta/overlay: {rows}")
+    # An ephemeral is in no channel's history, so nothing is stored for it.
+    depth = len(history())
+    client.chat_postEphemeral(channel=channel, user=edited["user"], text="only you see this")
+    print(f"  posted an ephemeral; history is still {depth} message(s): {len(history()) == depth}")
 
-    client.chat_delete(channel=channel["id"], ts=ts)
-    left = client.conversations_history(channel=channel["id"], limit=10)["messages"]
-    print(f"  deleted; still in history: {ts in [m['ts'] for m in left]}")
+    print(f"  /_meta/overlay: { {k: len(v) for k, v in meta(s.base_url, 'overlay').items() if v} }")
+
+    # Deleting a thread ROOT leaves the placeholder real leaves, so the thread stays readable;
+    # deleting its last reply takes the placeholder with it.
+    client.chat_delete(channel=channel, ts=root)
+    stub = next(m for m in history() if m["ts"] == root)
+    print(
+        f"  deleted the root → subtype={stub['subtype']!r}, thread still returns "
+        f"{len(client.conversations_replies(channel=channel, ts=root)['messages'])}"
+    )
+    client.chat_delete(channel=channel, ts=reply)
+    print(f"  deleted the reply → root gone too: {root not in [m['ts'] for m in history()]}")
+
+    meta(s.base_url, "overlay/reset", token=s.token)
+    empty = not any(meta(s.base_url, "overlay").values())
+    print(f"\nreset → overlay empty: {empty}, #{name} back to {len(history())} message(s)")

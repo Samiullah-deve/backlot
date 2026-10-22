@@ -1231,10 +1231,18 @@ def merged_source(
             cols.append(f"m.{c} AS {c}")
     projection = ", ".join(cols)
     alive = f"NOT EXISTS (SELECT 1 FROM ov.{names['tombstone']} x WHERE {on})"
-    corpus = f"SELECT {projection} FROM main.{tbl} m WHERE {alive}"
+    # `_written` says which side a row came from, which a reader cannot otherwise tell: the two
+    # sides carry the same columns by design. `_message` reads it to decide whether to mint a
+    # `client_msg_id`, which a client mints and this API therefore does not. It is absent from
+    # the bare-table shape above, where every row is the corpus's, so a reader asks for it by
+    # name rather than assuming it.
+    corpus = f"SELECT {projection}, 0 AS _written FROM main.{tbl} m WHERE {alive}"
     if corpus_only:
         return f"({corpus}) AS {alias}"
-    return f"({corpus} UNION ALL SELECT {projection} FROM ov.{tbl} m WHERE {alive}) AS {alias}"
+    return (
+        f"({corpus} UNION ALL SELECT {projection}, 1 AS _written FROM ov.{tbl} m WHERE {alive})"
+        f" AS {alias}"
+    )
 
 
 # --- writes: the overlay -----------------------------------------------------------------

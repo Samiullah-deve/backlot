@@ -238,6 +238,21 @@ def diff_shapes(method: str, backlot: Shape, documented: Shape) -> list[Finding]
 
 PROBE_CORPUS: tuple[dict[str, Any], ...] = (
     {
+        # A message with a SUBTYPE, which is the only way the comparison sees the field: a
+        # message posted through this API carries none (`slack._writer`), so without a corpus
+        # one the probe would report `subtype` as surface Backlot does not serve.
+        "source_type": "slack",
+        "doc_id": "probe-join",
+        "channel": "probe-general",
+        "group": "probe",
+        "visibility": "public",
+        "author_email": "bob@probe.invalid",
+        "author_name": "Bob Probe",
+        "created": "2026-01-05T09:00:00Z",
+        "content": "<@bob> has joined the channel",
+        "subtype": "channel_join",
+    },
+    {
         "source_type": "slack",
         "doc_id": "probe-thread",
         "channel": "probe-general",

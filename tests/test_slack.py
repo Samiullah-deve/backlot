@@ -4171,8 +4171,8 @@ def test_post_ephemeral_stores_nothing(wclient, tokens):
 
 
 def test_the_service_token_posts_as_a_bot(wclient, admin_h):
-    # auth.test already answers the service token as USERVICE0 by analogy to a bot token; a
-    # message it writes carries the same identity and the subtype real Slack gives an app post.
+    # auth.test already answers the service token as USERVICE0 by analogy to a bot token, and a
+    # message it writes carries the same identity. No subtype: `_writer` records the measurement.
     # A client that calls auth.test and matches user_id against message authors -- the use case
     # auth.test's own docstring names -- has to find this message.
     cid = synth.slack_channel_id("incidents")
@@ -4180,7 +4180,7 @@ def test_the_service_token_posts_as_a_bot(wclient, admin_h):
         "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "from ci"}
     ).json()
     assert j["ok"] is True
-    assert j["message"]["subtype"] == "bot_message"
+    assert "subtype" not in j["message"]
     assert j["message"]["user"] == "USERVICE0"
     me = wclient.post("/slack/api/auth.test", headers=admin_h).json()
     assert me["user_id"] == j["message"]["user"]
@@ -4188,9 +4188,9 @@ def test_the_service_token_posts_as_a_bot(wclient, admin_h):
         "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
     ).json()["messages"]
     posted = [m for m in hist if m["ts"] == j["ts"]][0]
-    assert posted["user"] == "USERVICE0" and posted["subtype"] == "bot_message"
-    # A bot message carries no client_msg_id or blocks -- the client that would have minted them
-    # is Slack itself. `_message` already draws that line off `subtype`.
+    assert posted["user"] == "USERVICE0" and "subtype" not in posted
+    # A message posted through this API carries no client_msg_id, whoever posted it: the client
+    # that would mint one is the thing this API replaces. `_message` records the measurement.
     assert "client_msg_id" not in posted
     # The same identity wherever the service account is rendered from a stored address, rather
     # than the hash of its sentinel: a reaction it leaves, and the stamp on a message it edits.
@@ -4961,16 +4961,21 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
     }
 
 
-def test_a_bot_message_carries_bot_id_in_history(wclient, admin_h):
+@pytest.mark.parametrize("who", ["admin", "person"])
+def test_bot_id_marks_an_app_post_and_only_an_app_post(wclient, tokens, admin_h, who):
+    # `_message` records the measurement: real carries `bot_id` on a message an app posted, in
+    # history as well as in the echo, and no `subtype` on either. A person's message has neither.
+    h = admin_h if who == "admin" else _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     ts = wclient.post(
-        "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "ci says"}
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "ci says"}
     ).json()["ts"]
     hist = wclient.post(
         "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
     ).json()["messages"]
     msg = [m for m in hist if m["ts"] == ts][0]
-    assert msg["bot_id"] and msg["subtype"] == "bot_message"
+    assert ("bot_id" in msg) is (who == "admin")
+    assert "subtype" not in msg
 
 
 def test_an_author_with_a_differently_cased_address_can_edit_their_own_message(wclient, tokens):

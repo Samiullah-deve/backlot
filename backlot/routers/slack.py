@@ -1942,9 +1942,12 @@ def _writer(caller: Caller) -> tuple[str, str, bool]:
 
     The service token has no corpus email -- `_is_member` says outright that it "is not a person"
     -- and `auth.test` already answers it as ``USERVICE0`` by analogy to a bot token, on the
-    grounds that "real Slack answers a bot token with the app's own id rather than a user's". A
-    message it writes carries that same identity and the ``bot_message`` subtype real Slack gives
-    an app-posted message, so a client branching on subtype sees the shape it would see live.
+    grounds that "real Slack answers a bot token with the app's own id rather than a user's".
+
+    What it does NOT carry is a subtype. Measured against slack.com on 2026-10-22 with an app's
+    bot token: the echo and the history both answered `app_id`, `blocks`, `bot_id`,
+    `bot_profile`, `team`, `text`, `ts`, `type` and the bot user's `user`, and no `subtype`. A
+    `bot_message` here would also drop `blocks`, which real serves.
     """
     if caller.is_admin:
         return SERVICE_EMAIL, SERVICE_USER_ID, True
@@ -2095,7 +2098,7 @@ async def chat_post_message(request: Request):
             "created_ts": now,
             "thread_ts": thread_ts,
             "thread_seq": thread_seq,
-            "subtype": "bot_message" if is_bot else None,
+            "subtype": None,
         },
     )
     _invalidate(request, name)
@@ -2119,19 +2122,33 @@ async def chat_post_ephemeral(request: Request):
 
     Errors quoted from the spec's ``default`` response: `channel_not_found`, `is_archived`,
     `msg_too_long`, `no_text`, `restricted_action`, `too_many_attachments`, `user_not_in_channel`.
-    Backlot answers `channel_not_found` and `no_text`.
+    Backlot answers `channel_not_found` and `user_not_in_channel`.
+
+    `text` is not required here, where `chat.postMessage` requires it: measured against
+    slack.com on 2026-10-22, this method posts with `text` absent, empty or blank, and refuses
+    only a missing `user` (`invalid_arguments`) or one who is not in the channel
+    (`user_not_in_channel`). Reading `text` by `chat.postMessage`'s rule is the mistake
+    :data:`_P_POST_EPHEMERAL` cannot catch, since the two methods share nothing but a name.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    if err := _missing_argument(request, "channel", "user", "text"):
+    if err := _missing_argument(request, "channel", "user"):
         return err
     name, err = _writable_channel(request, conn, caller)
     if err is not None:
         return err
-    if not (_param(request, "text") or "").strip():
-        return _err("no_text")
+    uid = _param(request, "user") or ""
+    known = uid == SERVICE_USER_ID or any(
+        synth.slack_user_id(e) == uid for e in store.all_user_emails(conn)
+    )
+    if not known and not _slack_author_by_uid(request, conn, uid):
+        # Measured on an id nobody has (`U00000000`). Whether real also refuses a person who is
+        # simply not in the channel was not measured, and a public channel's membership here is
+        # having spoken -- which a written message deliberately does not confer -- so refusing on
+        # that would refuse a caller posting to themselves.
+        return _err("user_not_in_channel")
     return {"ok": True, "message_ts": synth.slack_fmt_ts(int(time.time()), f"ephemeral:{name}")}
 
 
@@ -2729,6 +2746,12 @@ def _subscribed(caller: Caller, root_author: str | None, reply_authors) -> bool:
     return any((e or "").lower() == email for e in reply_authors or ())
 
 
+def _is_written(row) -> bool:
+    """Whether this row was written through the API rather than imported — `merged_source`'s
+    `_written`, absent from the bare-table shape it returns while nothing has been written."""
+    return "_written" in row.keys() and bool(row["_written"])
+
+
 def _message(
     row,
     reply_count: int = 0,
@@ -2747,17 +2770,22 @@ def _message(
         "ts": row["ts"],
         "team": TEAM_ID,
     }
-    if row["subtype"] == "bot_message":
-        # Real Slack carries `bot_id` on the stored message, so a client that branches on it sees
-        # it in history too, not only in the reply to the post that created it.
+    if row["author_email"] == SERVICE_EMAIL:
+        # Real carries `bot_id` on a message an app posted, in history as well as in the echo, so
+        # a client that branches on it sees the same thing both places. It is the author that
+        # says so, not a subtype: measured 2026-10-22, a bot-token post has none.
         m["bot_id"] = BOT_ID
-    if not row["subtype"]:
+    if not row["subtype"] and not _is_written(row):
         # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
         # composed, so neither belongs on a message Slack itself generated — measured: a
         # channel_join carries only type/user/text/ts/subtype. `team` is left on both: it is
         # absent from a channel_join too, but a bot_message is a real posted message rather than a
         # system notice and there was none to measure, so dropping it everywhere would generalise
         # past the evidence.
+        #
+        # Nor on a message posted through this API: measured against slack.com on 2026-10-22, a
+        # message posted over the Web API carries none, in the echo or in history. A corpus
+        # message stands for one a Slack client posted, so it keeps its.
         #
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a

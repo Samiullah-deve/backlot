@@ -2695,7 +2695,9 @@ def test_a_merged_row_keeps_the_corpus_column_order(ov_db):
     _post(ov_db, "incidents", "4000000000.000009", "ava@acme.com", "ordered", 4000000000)
     corpus_cols = [r[1] for r in ov_db.execute("PRAGMA main.table_info(slack_messages)")]
     row = store.list_slack_top_level(ov_db, "incidents", None, limit=100)[0]
-    assert list(row.keys()) == corpus_cols
+    # `_written` is the merge's own column, appended after the corpus's; the order under test is
+    # the corpus's own.
+    assert list(row.keys()) == [*corpus_cols, "_written"]
 
 
 def test_paging_across_the_boundary_neither_repeats_nor_drops(ov_db):

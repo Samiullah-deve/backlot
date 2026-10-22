@@ -19,8 +19,18 @@ is gone when the process is.
 
 Reads merge the two. A message posted through `chat.postMessage` appears in
 `conversations.history`, `conversations.replies` and `search.messages`; one edited through
-`chat.update` reads back edited everywhere, search included; one deleted through `chat.delete`
-disappears from all of them.
+`chat.update` reads back edited everywhere, search included.
+
+A deleted one goes, unless it is a thread root with replies still under it — real leaves that as
+a placeholder so the thread stays readable, `subtype: "tombstone"` and `hidden: true` over
+`This message was deleted.`, keeping its `thread_ts`, `reply_count`, `reply_users` and
+`latest_reply`. Deleting the last reply takes the placeholder with it.
+
+Two messages posted in one second come back in the order they were posted. Slack's `ts` is a
+second and a six-digit fraction, and real's fractions rise within a second as well as across one,
+so a posted message takes the next free fraction above the highest its channel already holds in
+that second. An imported message keeps the hashed fraction the importer gives it: a corpus states
+its own order in its timestamps.
 
 A corpus row cannot be changed, so an edit is stored as an overwrite of one column and a delete as
 a tombstone, and both are applied when the row is read. This is why a message the corpus shipped
@@ -65,12 +75,19 @@ A user token writes as that person. The admin/service token writes as `USERVICE0
 `auth.test` already reports it as — and its messages carry the `bot_message` subtype real Slack
 gives an app-posted message.
 
-## Scopes are not modelled
+## What is not modelled
 
-Real Slack splits some answers on OAuth scope rather than on identity: posting to a public channel
-you have not joined succeeds with `chat:write.public` and answers `not_in_channel` without it.
-Backlot has no scope concept and takes the permissive branch. The divergence is recorded in
-`backlot/fidelity/baseline/slack.json` rather than left for a caller to discover.
+Each of these is recorded in `backlot/fidelity/baseline/slack.json` with the measurement behind
+it, rather than left for a caller to discover.
+
+- **OAuth scopes.** Real Slack splits some answers on scope rather than on identity: posting to a
+  public channel you have not joined succeeds with `chat:write.public` and answers
+  `not_in_channel` without it. Backlot has no scope concept and takes the permissive branch.
+- **An app identity.** Real adds `app_id`, `bot_id`, `bot_profile` and `parent_user_id` to the
+  message a write echoes back. A corpus has nothing to populate them from.
+- **The emoji set.** `reactions.add` takes any name; real answers `invalid_name` for one its
+  workspace does not have. Validating it needs Slack's emoji list, and a partial list would
+  refuse names real accepts.
 
 ## Adding a source
 

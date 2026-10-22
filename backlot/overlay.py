@@ -31,27 +31,6 @@ from backlot import store
 # cannot be weak-referenced, so there is nowhere to hang per-connection state.
 LOCK = threading.Lock()
 
-# Overlay tables a source needs that the five generated ones do not cover, because they hold a
-# concept only that vendor has. Deliberately NOT folded into the generator: Slack channel
-# membership has no Gmail or Drive equivalent, and a generic "extras" table shape would be a guess
-# at vendors nobody has measured. One entry per source, added when that source needs one.
-#
-# Keyed by table NAME, not a bare list, so a caller that has to enumerate the overlay's contents
-# reads the names off the registry instead of parsing them back out of DDL.
-EXTRA_DDL: dict[str, dict[str, str]] = {
-    "slack": {
-        # Explicit membership, overriding the rule the corpus derives. `state` is 'in' or 'out'.
-        # Only 'out' is written for now (a poster must not be silently joined to a public
-        # channel); `conversations.join` is what writes 'in'. Three states rather than a set,
-        # because "removed" is a fact the corpus cannot express -- see store.slack_membership.
-        "slack_membership": (
-            "CREATE TABLE IF NOT EXISTS ov.slack_membership ("
-            "  channel TEXT NOT NULL, email TEXT NOT NULL, state TEXT NOT NULL,"
-            "  PRIMARY KEY (channel, email))"
-        ),
-    },
-}
-
 # Names are handed out from a counter, never derived from an object's identity. `id(app)` would
 # repeat: CPython reuses the address of a garbage-collected object, so a later app could land on a
 # freed one's address and attach to the overlay that app left behind.
@@ -199,8 +178,6 @@ def attach(conn: sqlite3.Connection, name: str) -> None:
     conn.execute("ATTACH DATABASE ? AS ov", (_uri(name),))
     for source_type in sorted(store.WRITABLE):
         for ddl in _source_ddl(conn, source_type):
-            conn.execute(ddl)
-        for ddl in EXTRA_DDL.get(source_type, {}).values():
             conn.execute(ddl)
         conn.execute(_acl_view_ddl(conn, source_type))
     conn.commit()

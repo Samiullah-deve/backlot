@@ -81,16 +81,6 @@ def test_the_patch_and_tombstone_tables_are_keyed_on_the_source_id_columns(sampl
     conn.close()
 
 
-def test_a_sources_extra_tables_are_created(sample_settings):
-    # Slack membership is not one of the five generated tables — it is a concept only Slack has,
-    # and EXTRA_DDL is where a vendor's own overlay table goes rather than the generator.
-    conn = store.connect_ro(sample_settings.db_path)
-    overlay.attach(conn, "test_ov_extra")
-    cols = [r[1] for r in conn.execute("PRAGMA ov.table_info(slack_membership)")]
-    assert cols == ["channel", "email", "state"]
-    conn.close()
-
-
 def test_two_overlays_do_not_share_rows(sample_settings):
     # Two servers in one process (which is every pytest run) must not see each other's writes.
     # A shared-cache URI is keyed on its NAME, so the name has to be per-app, not a constant.
@@ -199,7 +189,6 @@ def test_meta_overlay_is_empty_on_a_fresh_server(oclient):
     assert j["slack_messages"] == []
     assert j["slack_patch"] == []
     assert j["slack_tombstone"] == []
-    assert j["slack_membership"] == []
 
 
 def test_meta_overlay_names_every_table_but_the_index(oclient):
@@ -209,7 +198,6 @@ def test_meta_overlay_names_every_table_but_the_index(oclient):
     expected = set()
     for src in store.WRITABLE:
         expected |= {n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")}
-        expected |= set(overlay.EXTRA_DDL.get(src, {}))
     assert set(j) == expected
 
 
@@ -319,16 +307,9 @@ def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
     before = num_members()
     h = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}
     oclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "new"})
-    # The poster is written `out`, so the count must NOT move -- but it has to be recomputed to
-    # know that, rather than served from a cache that happens to agree.
+    # A post does not change who is in the channel, so the count must not move -- but it has to
+    # be recomputed to know that, rather than served from a cache that happens to agree.
     assert num_members() == before
-    # A member who leaves is the case where the cached number would be wrong.
-    from backlot import store
-
-    conn = oclient.app.state.conn
-    store.slack_set_membership(conn, "eng-announcements", "ava@acme.com", "out")
-    oclient.app.state.channel_members = None
-    assert num_members() == before - 1
 
 
 def test_the_warm_up_does_not_undo_a_write_that_landed_while_it_ran(sample_settings, monkeypatch):
@@ -369,11 +350,11 @@ def test_the_warm_up_does_not_undo_a_write_that_landed_while_it_ran(sample_setti
             page = client.post("/slack/api/conversations.list", headers=admin, data={"limit": 200})
             return [c["num_members"] for c in page.json()["channels"] if c["id"] == cid][0]
 
-        store.slack_set_membership(app.state.conn, "eng-announcements", "ava@acme.com", "out")
         request = type("_Req", (), {"app": app})()
         _invalidate(request, "eng-announcements")
-        assert num_members() == 0
+        counted = num_members()
 
         release.set()
         app.state.warm_thread.join(10)
-        assert num_members() == 0
+        # The published map must not put the stale count back over the invalidated channel.
+        assert num_members() == counted

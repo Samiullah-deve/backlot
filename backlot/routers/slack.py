@@ -444,7 +444,14 @@ def read_post_body(
 def _json_args(body: bytes) -> dict[str, str]:
     """The arguments a JSON object body carries, as the text a form field would have carried: a
     client that sends `7` or `true` and one that sends `"7"` or `"true"` name the same argument,
-    and a handler reads one type rather than two. A body that is not an object carries none."""
+    and a handler reads one type rather than two. A body that is not an object carries none.
+
+    `token` is dropped. It is a credential in a FORM body and `auth.slack_token` reads it ahead
+    of the header, which is right there and wrong here: measured against slack.com on 2026-10-22,
+    a JSON `{"token": <valid>}` with no header answers `not_authed`, and one carrying a bogus
+    `token` beside a valid header is answered for the header. Kept, it would authenticate a
+    client as whoever a stale field in its own payload names.
+    """
     try:
         parsed = json.loads(body)
     except ValueError:
@@ -452,7 +459,9 @@ def _json_args(body: bytes) -> dict[str, str]:
     if not isinstance(parsed, dict):
         return {}
     return {
-        k: v if isinstance(v, str) else json.dumps(v) for k, v in parsed.items() if v is not None
+        k: v if isinstance(v, str) else json.dumps(v)
+        for k, v in parsed.items()
+        if v is not None and k != "token"
     }
 
 
@@ -2013,15 +2022,20 @@ async def chat_post_message(request: Request):
     and `channel=` `channel_not_found`. A `text` of spaces posts, so the test is emptiness rather
     than blankness. `chat.update` reads `text` by the same rule and `ts` by `channel`'s.
 
+    `blocks` or `attachments` carries the message instead, and then no `text` is needed: measured
+    2026-10-22, `blocks` alone posts and echoes a `text` filled from the section, and
+    `attachments` alone posts and echoes `text: ""`. Neither is rendered here -- both stay on the
+    recorded list of arguments this ignores -- but refusing a post that carries one would refuse
+    how every Block Kit client posts.
+
     Posting does not join a public channel the caller is not in, and nothing here has to arrange
     that: membership there is derived from `main.slack_messages`, which a written row never joins.
 
-    `thread_ts` posts the message as a reply in that thread. It is honoured rather than ignored
-    because an agent told to reply in a thread otherwise gets a top-level message and a `200 ok` --
-    a wrong answer with no error in it. A `thread_ts` that does not name a message the caller can
-    see in this channel is answered `message_not_found`: the vendor's enum for THIS method lists no
-    thread error, so which answer to give is Backlot's decision, drawn to match the vocabulary
-    every other message-addressing method here uses rather than inventing a new string.
+    `thread_ts` posts the message as a reply, under the ROOT of the thread it names, so replying
+    to a reply lands in the same thread. Measured against slack.com on 2026-10-22: a well-formed
+    `thread_ts` that names no message posts the message TOP-LEVEL and carries no `thread_ts` back,
+    an empty one does the same, and one real cannot read as a timestamp (`abc`) is
+    `invalid_thread_ts` with `[ERROR] 0 is not a valid thread_ts`.
 
     Arguments the vendor documents and Backlot still ignores: `blocks`, `attachments`, `as_user`,
     `username`, `icon_emoji`, `icon_url`, `reply_broadcast`, `unfurl_links`, `unfurl_media`,
@@ -2039,15 +2053,24 @@ async def chat_post_message(request: Request):
     if err is not None:
         return err
     text = _param(request, "text") or ""
-    if not text:
+    if not text and not (_param(request, "blocks") or _param(request, "attachments")):
         return _err("no_text")
     author, uid, is_bot = _writer(caller)
     ids = auth.visible_ids(request, caller)
     thread_ts, thread_seq = None, 0
-    if raw_thread := _param(request, "thread_ts"):
-        parent = store.document_by_key(conn, "slack", (name, raw_thread), ids)
-        if parent is None:
-            return _err("message_not_found")
+    wanted = _slack_ts(_param(request, "thread_ts"))
+    if wanted is False:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "invalid_thread_ts",
+                "response_metadata": {"messages": ["[ERROR] 0 is not a valid thread_ts"]},
+            }
+        )
+    parent = (
+        store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
+    )
+    if parent is not None:
         # Slack threads a reply under the ROOT, not under whichever message was named: replying to
         # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
         # what `thread_ts` holds on every row of a thread, the root included.
@@ -2670,16 +2693,9 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
     A service token is not a person: it bypasses the ACL rather than belonging to anything, so it
     is a member of nothing — the reasoning `_subscribed` and `_last_read` apply to a thread and a
     read cursor.
-
-    An explicit membership overrides both derivations. On a private channel that is the only thing
-    that can: being shown it is otherwise being in it, and someone removed from one has to stop
-    reading as a member while the corpus still holds their messages.
     """
     if not caller.email:
         return False
-    state = store.slack_membership(conn, name, caller.email)
-    if state != "derived":
-        return state == "in"
     if is_private:
         return True
     return store.slack_channel_has_author(conn, name, caller.email)

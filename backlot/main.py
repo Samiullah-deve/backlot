@@ -1252,7 +1252,7 @@ def meta_overlay():
     An ACL oracle asks what an agent did, and answering it by diffing the served surface against
     itself means knowing what the surface looked like before. The overlay already IS that
     difference, so it is reported directly: the documents written, the grants they carry, the
-    columns overwritten, the documents subtracted, and the memberships changed.
+    columns overwritten, and the documents subtracted.
 
     The FTS index is left out. It holds no fact the document rows do not.
 
@@ -1264,7 +1264,6 @@ def meta_overlay():
     out: dict[str, list[dict]] = {}
     for src in sorted(store.WRITABLE):
         names = [n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")]
-        names += list(overlay.EXTRA_DDL.get(src, {}))
         for name in names:
             out[name] = [dict(r) for r in conn.execute(f"SELECT * FROM ov.{name}")]
     return out

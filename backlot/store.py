@@ -4261,181 +4261,24 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
     return conversation_members_by_grant(conn, "slack", channel)
 
 
-# --- slack channel membership ----------------------------------------------------------------
-#
-# A written membership is Slack's alone: a standard Teams channel's members are the whole team and
-# its router never asks who is in one, so the override lives in these four wrappers rather than in
-# the `conversation_*` readers they call. The four are four answers to ONE question and must not
-# disagree, so each takes the same override, and each falls through to the generic reader
-# untouched when nothing has been written for that channel.
-
-
-def slack_membership(conn, channel: str, email: str) -> str:
-    """Whether this person is in this channel: ``"in"``, ``"out"``, or ``"derived"`` — nothing was
-    written, so the channel's own rule answers (grants for a private channel, having spoken for a
-    public one).
-
-    Three states rather than a set, because "removed" is a fact the corpus cannot express and
-    `conversations.kick` produces: :func:`conversation_membership_violations` treats a speaker who
-    cannot read a private channel as a corpus that cannot be true, its docstring noting that
-    leaving is "the one state real Slack reaches this from". The third state is how a channel
-    someone was removed from is told apart from a corpus that is wrong.
-    """
-    ins, outs = _slack_explicit(conn, channel)
-    if email in outs:
-        return "out"
-    if email in ins:
-        return "in"
-    return "derived"
-
-
-def slack_set_membership(conn, channel: str, email: str, state: str) -> None:
-    """Record that someone is explicitly in a channel, or explicitly out of it."""
-    from backlot import overlay
-
-    if state not in ("in", "out"):
-        raise ValueError(f"slack_set_membership: {state!r} is not a membership state")
-    with overlay.LOCK:
-        conn.execute(
-            "INSERT OR REPLACE INTO ov.slack_membership (channel, email, state) VALUES (?,?,?)",
-            (channel, email, state),
-        )
-        conn.commit()
-
-
-def _slack_deactivated(conn) -> frozenset[str]:
-    """Every deactivated member, for the branches that filter in Python rather than in SQL. Read
-    once per question, the way :func:`_slack_explicit` is; both answer the same fact as the SQL
-    branches, which name the table directly."""
-    return frozenset(r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users"))
-
-
-def _slack_explicit(conn, channel: str) -> tuple[frozenset[str], frozenset[str]]:
-    """``(explicitly in, explicitly out)`` for a channel, read once per membership question rather
-    than per person. Both empty without an overlay, which is what makes every reader below fall
-    back to exactly the query it ran before writes existed."""
-    from backlot import overlay
-
-    if not overlay.is_attached(conn):
-        return frozenset(), frozenset()
-    ins, outs = set(), set()
-    for email, state in conn.execute(
-        "SELECT email, state FROM ov.slack_membership WHERE channel = ?", (channel,)
-    ):
-        (ins if state == "in" else outs).add(email)
-    return frozenset(ins), frozenset(outs)
-
-
-def _slack_written_channels(conn) -> frozenset[str]:
-    """Every channel a membership was written for, in one query — so the bulk count pays for the
-    override on those channels alone rather than asking per channel."""
-    from backlot import overlay
-
-    if not overlay.is_attached(conn):
-        return frozenset()
-    return frozenset(r[0] for r in conn.execute("SELECT DISTINCT channel FROM ov.slack_membership"))
-
-
-def _slack_public_members_sql(ins: frozenset[str], outs: frozenset[str]) -> tuple[str, list]:
-    """The public-channel member set as a subquery, with the overrides applied IN SQL.
-
-    Applied here rather than to a materialised list because the whole point of the public path is
-    that it never materialises one: the speakers of a channel are read index-only off
-    idx_slack_channel_author. `NOT IN` keeps that index usable, and `UNION` folds the explicit
-    joiners in while deduplicating them against speakers, so the caller can still page or count
-    with LIMIT/OFFSET over a set that is already correct.
-    """
-    params: list = []
-    excl = ""
-    if outs:
-        excl = f" AND author_email NOT IN ({','.join('?' for _ in outs)})"
-        params += sorted(outs)
-    sql = f"SELECT DISTINCT author_email AS email FROM slack_messages WHERE channel = ?{excl}"
-    for email in sorted(ins):
-        sql += " UNION SELECT ?"
-        params.append(email)
-    # Deactivation is applied OVER the whole set, speakers and explicit joiners alike, because it
-    # outranks both: Slack removes a deactivated member from every channel, so an explicit `in`
-    # cannot put one back.
-    return (
-        f"SELECT email FROM ({sql}) WHERE email NOT IN (SELECT email FROM slack_deactivated_users)",
-        params,
-    )
-
-
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
-    """One page of a channel's members, with any written membership applied BEFORE the page is
-    sliced — adjusting a page after slicing would drop or repeat someone at every boundary."""
-    ins, outs = _slack_explicit(conn, channel)
-    if not ins and not outs:
-        return conversation_member_emails(conn, "slack", channel, limit=limit, offset=offset)
-    members = slack_private_channel_members(conn, channel)
-    if members is not None:
-        # `members` already excludes the deactivated; `ins` has to be filtered too, or an explicit
-        # membership would put back somebody Slack removes from every channel.
-        adjusted = sorted((set(members) | set(ins)) - set(outs) - _slack_deactivated(conn))
-        return adjusted[offset : offset + limit]
-    sql, params = _slack_public_members_sql(ins, outs)
-    return [
-        r[0]
-        for r in conn.execute(
-            f"SELECT email FROM ({sql}) ORDER BY email LIMIT ? OFFSET ?",
-            (channel, *params, limit, offset),
-        )
-    ]
+    return conversation_member_emails(conn, "slack", channel, limit=limit, offset=offset)
 
 
 def slack_membership_violations(conn) -> list[tuple[str, str]]:
-    """The generic violations, less the speakers a channel explicitly removed.
-
-    Being removed is the one state the corpus cannot express and `conversations.kick` produces,
-    which is the whole reason membership is a tri-state — so a speaker who is explicitly `out` of
-    a private channel is a person who left, not a corpus that cannot be true.
-    """
-    rows = conversation_membership_violations(conn, "slack")
-    written = _slack_written_channels(conn)
-    if not written:
-        return rows
-    removed = {channel: _slack_explicit(conn, channel)[1] for channel in written}
-    return [(c, email) for c, email in rows if email not in removed.get(c, frozenset())]
+    return conversation_membership_violations(conn, "slack")
 
 
 def slack_channel_has_author(conn, channel, email) -> bool:
-    """Whether ``email`` is a member of this channel.
-
-    Deactivation answers first and on its own, ahead of a written membership: Slack removes a
-    deactivated member from every channel, so an explicit `in` cannot put one back.
-    """
-    if email in _slack_deactivated(conn):
-        return False
-    state = slack_membership(conn, channel, email)
-    if state != "derived":
-        return state == "in"
     return conversation_has_author(conn, "slack", channel, email)
 
 
 def slack_channel_member_counts(conn) -> dict[str, int]:
-    """Every channel's member count, from the one pass `conversation_member_counts` makes, with
-    the channels that have a written membership recounted — the difference between one GROUP BY
-    and a query per channel."""
-    counts = conversation_member_counts(conn, "slack")
-    for channel in _slack_written_channels(conn):
-        if channel in counts:
-            counts[channel] = count_slack_channel_members(conn, channel)
-    return counts
+    return conversation_member_counts(conn, "slack")
 
 
 def count_slack_channel_members(conn, channel) -> int:
-    """One channel's member count, counted from the same set :func:`slack_channel_member_emails`
-    pages, so `num_members` and walking the members cannot disagree."""
-    ins, outs = _slack_explicit(conn, channel)
-    if not ins and not outs:
-        return count_conversation_members(conn, "slack", channel)
-    members = slack_private_channel_members(conn, channel)
-    if members is not None:
-        return len((set(members) | set(ins)) - set(outs) - _slack_deactivated(conn))
-    sql, params = _slack_public_members_sql(ins, outs)
-    return conn.execute(f"SELECT COUNT(*) FROM ({sql})", (channel, *params)).fetchone()[0]
+    return count_conversation_members(conn, "slack", channel)
 
 
 def all_user_emails(conn) -> list[str]:

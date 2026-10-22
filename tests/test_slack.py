@@ -4150,15 +4150,6 @@ def test_posting_does_not_silently_join_a_public_channel(wclient, tokens):
     wclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "hi"})
     after = wclient.post("/slack/api/conversations.info", headers=h, data={"channel": cid}).json()
     assert after["channel"]["is_member"] is False
-    # An explicit membership DOES reach `is_member`, in both directions — the branch
-    # `conversations.join` and `conversations.kick` will write through.
-    conn = wclient.app.state.conn
-    for state, expected in (("in", True), ("out", False)):
-        store.slack_set_membership(conn, "eng-announcements", "bob@acme.com", state)
-        seen = wclient.post(
-            "/slack/api/conversations.info", headers=h, data={"channel": cid}
-        ).json()
-        assert seen["channel"]["is_member"] is expected, state
 
 
 def test_post_ephemeral_stores_nothing(wclient, tokens):
@@ -4944,15 +4935,30 @@ def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
     assert posted["ts"] in [m["ts"] for m in thread]
 
 
-def test_posting_into_a_thread_that_does_not_exist_is_message_not_found(wclient, tokens):
+def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_refused(
+    wclient, tokens
+):
+    # `chat_post_message` records the measurement: a well-formed `thread_ts` that names no message
+    # posts top-level, an empty one does the same, and one real cannot read is refused.
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
-    j = wclient.post(
+    for value in ("1700000000.000001", ""):
+        j = wclient.post(
+            "/slack/api/chat.postMessage",
+            headers=h,
+            data={"channel": cid, "text": "orphan", "thread_ts": value},
+        ).json()
+        assert j["ok"] is True, value
+        assert "thread_ts" not in j["message"], value
+    assert wclient.post(
         "/slack/api/chat.postMessage",
         headers=h,
-        data={"channel": cid, "text": "orphan", "thread_ts": "1.000001"},
-    ).json()
-    assert j == {"ok": False, "error": "message_not_found"}
+        data={"channel": cid, "text": "orphan", "thread_ts": "abc"},
+    ).json() == {
+        "ok": False,
+        "error": "invalid_thread_ts",
+        "response_metadata": {"messages": ["[ERROR] 0 is not a valid thread_ts"]},
+    }
 
 
 def test_a_bot_message_carries_bot_id_in_history(wclient, admin_h):

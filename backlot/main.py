@@ -12,6 +12,7 @@ import logging
 import re
 import sys
 import threading
+import uuid
 from contextlib import asynccontextmanager
 
 import yaml
@@ -26,6 +27,7 @@ from starlette.types import Scope
 from backlot import auth, errors, openapi, overlay, store, synth, telemetry
 from backlot.acl import Acl
 from backlot.config import get_settings
+from backlot.errors import msgraph as msgraph_errors
 from backlot.oauth import Oauth
 from backlot.routers import (
     atlassian,
@@ -34,6 +36,7 @@ from backlot.routers import (
     google,
     hubspot,
     linear,
+    msteams,
     notion,
     oauth,
     s3,
@@ -85,12 +88,17 @@ async def lifespan(app: FastAPI):
     _src = store.read_meta(conn, "source_documents")
     app.state.source_documents = int(_src) if _src is not None else None
 
-    # Three caches the warm-up below fills, each too slow to compute per request on a large corpus:
+    # Caches the warm-up below fills, each too slow to compute per request on a large corpus:
     # per-source COUNT(*), channel -> principals granted on any of its docs, and channel -> member
     # count. Every consumer treats None as "not warm yet" and falls back to its own query.
+    #
+    # Teams gets its OWN channel -> principals map rather than sharing Slack's: a channel name is
+    # unique within its source and nothing stops `#incidents` existing in both, so one map would
+    # answer for a channel the caller asked nothing about.
     app.state.doc_counts = None
     app.state.channel_acl = None
     app.state.channel_members = None
+    app.state.msteams_channel_acl = None
     # Channels a write has invalidated. The warm-up below builds its map from the corpus alone and
     # publishes it whole, so without this a write that landed while it was building would be
     # undone the moment it finished — `conversations.list` answering the pre-write count for the
@@ -114,16 +122,26 @@ async def lifespan(app: FastAPI):
                 temp_memory=True,
             )
             try:
-                cacl: dict[str, set] = {}
-                for ch, pid in c.execute(
-                    f"SELECT DISTINCT a.channel, a.principal_id FROM {store.acl_table('slack')} a"
-                ):
-                    cacl.setdefault(ch, set()).add(pid)
-                app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
+
+                def _channel_acl(src: str) -> dict:
+                    cacl: dict[str, set] = {}
+                    for ch, pid in c.execute(
+                        f"SELECT DISTINCT a.{store.grouping_col(src)}, a.principal_id "
+                        f"FROM {store.acl_table(src)} a"
+                    ):
+                        cacl.setdefault(ch, set()).add(pid)
+                    return {k: frozenset(v) for k, v in cacl.items()}
+
+                app.state.channel_acl = _channel_acl("slack")
+                app.state.msteams_channel_acl = _channel_acl("msteams")
                 app.state.doc_counts = {
                     src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                     for src, tbl in store.SOURCE_TABLE.items()
                 }
+                # `slack_channel_member_counts`, not the generic reader it wraps: the wrapper
+                # is what applies a written membership, and the map this publishes is what
+                # `conversations.list` answers from.
+                #
                 # Published first, then the invalidations re-applied: a write between the two
                 # pops from the map that is already live, so neither order loses one.
                 app.state.channel_members = store.slack_channel_member_counts(c)
@@ -497,6 +515,60 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
         return await call_next(request)
     refusal = await notion.front_door_body(request)
     return refusal if refusal is not None else await call_next(request)
+
+
+def _is_guid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+@app.middleware("http")
+async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
+    """A `/msgraph` request reaches the Teams routes as Graph reads it, and answers with the headers
+    Graph sends.
+
+    Two `Authorization` headers are refused by the front Graph sits behind before anything is read,
+    with an HTML page rather than a Graph error, and an `OPTIONS` or `HEAD` with an empty 405,
+    credential or none. Every other request has its path rewritten to the spelling the routes match
+    (``msteams.normalize_path``), and every answer carries the request's id as `request-id` and
+    `client-request-id` — the ids its `innerError` names, the second being the caller's own where it
+    sent a GUID one — with a 200's JSON served as OData under `OData-Version: 4.0` (measured against
+    graph.microsoft.com, 2026-10-21).
+    """
+    if not request.url.path.startswith("/msgraph/"):
+        return await call_next(request)
+    if len(request.headers.getlist("authorization")) > 1:
+        return Response(
+            msteams.DUPLICATE_HEADER_PAGE,
+            status_code=400,
+            media_type="text/html; charset=us-ascii",
+            headers={"Connection": "close"},
+        )
+    msteams.normalize_path(request.scope)
+    request_id = str(uuid.uuid4())
+    sent = request.headers.get("client-request-id", "")
+    client_id = sent if _is_guid(sent) else None
+    reset = msgraph_errors.REQUEST_ID.set(request_id)
+    reset_client = msgraph_errors.CLIENT_REQUEST_ID.set(client_id)
+    try:
+        if request.method in ("OPTIONS", "HEAD"):
+            response = Response(status_code=405)
+        else:
+            response = await call_next(request)
+    finally:
+        msgraph_errors.REQUEST_ID.reset(reset)
+        msgraph_errors.CLIENT_REQUEST_ID.reset(reset_client)
+    response.headers["request-id"] = request_id
+    response.headers["client-request-id"] = client_id or request_id
+    if response.status_code == 200 and response.headers.get("content-type", "").startswith(
+        "application/json"
+    ):
+        response.headers["content-type"] = msgraph_errors.JSON_MEDIA_TYPE
+        response.headers["OData-Version"] = "4.0"
+    return response
 
 
 @app.middleware("http")
@@ -1223,6 +1295,9 @@ def meta_overlay_reset(request: Request):
 
 app.include_router(oauth.router)
 app.include_router(slack.router)
+app.include_router(msteams.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(msteams.unmatched_router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)

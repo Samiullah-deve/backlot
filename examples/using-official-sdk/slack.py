@@ -4,7 +4,7 @@
 One run exercises the whole surface: the reads, then all nine write methods, then the two
 `/_meta/overlay` routes an evaluation uses. Nothing reaches the corpus file — writes land in an
 in-memory overlay that dies with the server, and the reset at the end puts the corpus back, which
-is what lets one evaluation run start where the last one did. See docs/overlay.md.
+is what lets one evaluation run start where the last one did. See docs/write-overlay.md.
 
 pip install -e ".[official-sdk]"
 python examples/using-official-sdk/slack.py            # or: --url http://localhost:8000

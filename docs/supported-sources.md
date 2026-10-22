@@ -753,7 +753,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `reactions.list` | The caller's own, from writes rather than the corpus |
 
 The nine below the reads take writes. They land in a per-server overlay and the corpus file is
-never written; [Writes, and where they go](overlay.md) covers what a read then sees, how to read
+never written; [Writes, and where they go](write-overlay.md) covers what a read then sees, how to read
 the overlay back and how to reset it. `chat.postMessage`, `chat.postEphemeral`, `chat.update`,
 `chat.delete`, `reactions.add` and `reactions.remove` accept a JSON body as well as a form, which
 is what their `consumes` declares and where `slack_sdk` puts three of them.

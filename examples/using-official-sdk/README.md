@@ -14,7 +14,7 @@ takes a permalink, searches for what it posted, reacts and un-reacts, edits, sen
 reads `/_meta/overlay`, deletes, and resets. Slack is the only source with a write surface so
 far; the rest read. Writes never reach the corpus file — they land in an in-memory overlay that
 dies with the server, and the reset at the end puts the corpus back, which is what lets one
-evaluation run start where the last one did. [docs/overlay.md](../../docs/overlay.md) covers
+evaluation run start where the last one did. [docs/write-overlay.md](../../docs/write-overlay.md) covers
 how the overlay is read back and reset.
 
 ## Fireflies has no SDK — and raw HTTP is the official path

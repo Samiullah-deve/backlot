@@ -11,7 +11,7 @@ The bridge serves the WRITE methods too, so the agent is given a task it has to 
 rather than a question it can only answer: it finds the incident, finds the runbook, replies in
 the thread and reacts — retrieval included, since it cannot write the reply without reading both
 messages first. What it did is then read back from `/_meta/overlay`, the record an evaluation
-grades and the reason the writes land in an overlay instead of the corpus (see docs/overlay.md).
+grades and the reason the writes land in an overlay instead of the corpus (see docs/write-overlay.md).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:

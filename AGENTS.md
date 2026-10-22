@@ -71,7 +71,7 @@ rather than agreed to.
 Served **writes** exist, and they do not touch it. A write lands in `backlot/overlay.py`'s
 in-memory database, attached to the same connection; reads merge the two, and the overlay dies with
 the server. `/_meta/overlay` reports what is in it and `/_meta/overlay/reset` throws it away. See
-[`docs/overlay.md`](docs/overlay.md).
+[`docs/write-overlay.md`](docs/write-overlay.md).
 
 Most served endpoints are still reads, including reads issued over POST — GraphQL queries, search,
 batch read, token exchange. A POST is not evidence of a write either way; the endpoint tables in

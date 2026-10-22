@@ -182,7 +182,7 @@ overwritten, the documents subtracted — rather than diffing the served surface
 of itself. `POST /_meta/overlay/reset` takes the **admin** token, and is what makes a second run
 start where the first did; without it, run two is scored against run one's leftovers.
 
-[`docs/overlay.md`](../../docs/overlay.md) has the rest, including what is deliberately not
+[`docs/write-overlay.md`](../../docs/write-overlay.md) has the rest, including what is deliberately not
 modelled. [`examples/using-official-sdk/slack.py`](../../examples/using-official-sdk/slack.py)
 walks the whole surface in one run, and
 [`examples/using-mcp-with-agents/slack.py`](../../examples/using-mcp-with-agents/slack.py) hands

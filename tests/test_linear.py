@@ -258,19 +258,20 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     bla = synth.linear_team_membership_id("blackops", synth.linear_user_id("ava@acme.com"))
     hidden = gql(client, "{ teamMembership(id: %s) { id } }" % lit(bla), ava_h)
     assert "Entity not found" in hidden.json()["errors"][0]["message"]
-    # Each caller's membership in ENG is its own: a different id, at ENG's position in that caller's
-    # team list (third of the admin's three teams, second of ava's two).
-    q = "{ teams { nodes { key viewerMembership { id sortOrder } } } }"
-    eng = [
-        next(
-            t["viewerMembership"]
+    # Membership is the team's group, not every team the caller sees: ava, in engineering, sees
+    # design too, and the admin token is no person and in no team.
+    q = "{ teams { nodes { key viewerMembership { sortOrder } } } }"
+    memberships = {
+        who: {
+            t["key"]: t["viewerMembership"]
             for t in gql(client, q, h).json()["data"]["teams"]["nodes"]
-            if t["key"] == "ENG"
-        )
-        for h in (admin_h, ava_h)
-    ]
-    assert [m["sortOrder"] for m in eng] == [2.0, 1.0]
-    assert eng[0]["id"] != eng[1]["id"]
+        }
+        for who, h in (("admin", admin_h), ("ava", ava_h))
+    }
+    assert memberships == {
+        "admin": {"BLA": None, "DES": None, "ENG": None},
+        "ava": {"DES": None, "ENG": {"sortOrder": 0.0}},
+    }
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -283,6 +284,175 @@ def test_linear_state_type_is_linears_category(client, admin_h):
         "ENG-103": "backlog",
         "BLA-1": "triage",
     }
+
+
+_TEAM_LISTS = """query($id: String!) { team(id: $id) {
+  createdAt
+  states { nodes { id name type color position createdAt } }
+  labels { nodes { name team { id } } }
+  projects { nodes { name status { name type color position indefinite } } }
+  cycles { nodes { name } }
+} }"""
+
+
+def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h, tokens_yaml):
+    """A team's states are Linear's six defaults plus every other name its issues are in, newest
+    first and then by id, each the object `workflowState(id:)` answers. Its cycles show with the
+    team, the hidden issue's included; its projects and the workspace's labels only with an issue
+    the caller reads."""
+    ava_h = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
+
+    def lists(key, h):
+        r = gql(client, _TEAM_LISTS, h, id=key).json()
+        assert "errors" not in r, r["errors"]
+        return r["data"]["team"]
+
+    des = lists("DES", admin_h)
+    states = {s["name"]: (s["type"], s["color"], s["position"]) for s in des["states"]["nodes"]}
+    assert states == {
+        "Backlog": ("backlog", "#bec2c8", 0.0),
+        "Todo": ("unstarted", "#e2e2e2", 1.0),
+        "In Progress": ("started", "#f2c94c", 2.0),
+        "In Review": ("started", "#f2c94c", 2.5),
+        "Done": ("completed", "#5e6ad2", 3.0),
+        "Canceled": ("canceled", "#95a2b3", 4.0),
+        "Duplicate": ("duplicate", "#95a2b3", 5.0),
+    }
+    nodes = des["states"]["nodes"]
+    assert {s["createdAt"] for s in nodes} == {des["createdAt"]}
+    assert [s["id"] for s in nodes] == sorted((s["id"] for s in nodes), reverse=True)
+    for state in nodes:
+        q = "{ workflowState(id: %s) { id name type color position createdAt } }"
+        assert gql(client, q % lit(state["id"]), admin_h).json()["data"]["workflowState"] == state
+    triage = {s["name"]: s["position"] for s in lists("BLA", admin_h)["states"]["nodes"]}
+    assert triage["Triage"] == -0.5
+
+    eng = {who: lists("ENG", h) for who, h in (("admin", admin_h), ("ava", ava_h))}
+    labels = {who: {n["name"] for n in t["labels"]["nodes"]} for who, t in eng.items()}
+    assert labels == {
+        "admin": {"bug", "gateway", "latency", "tokens", "restricted-only"},
+        "ava": {"bug", "gateway", "latency", "tokens"},
+    }
+    assert {n["team"] for t in eng.values() for n in t["labels"]["nodes"]} == {None}
+    assert lists("DES", ava_h)["labels"] == eng["ava"]["labels"]
+    projects = {who: [n["name"] for n in t["projects"]["nodes"]] for who, t in eng.items()}
+    assert sorted(projects["admin"]) == ["runtime-stability", "vault-rotation"]
+    assert projects["ava"] == ["runtime-stability"]
+    assert eng["ava"]["projects"]["nodes"][0]["status"] == {
+        "name": "In Progress",
+        "type": "started",
+        "color": "#F2C94C",
+        "position": 2.0,
+        "indefinite": False,
+    }
+    assert des["projects"]["nodes"] == []
+    cycles = {who: {n["name"] for n in t["cycles"]["nodes"]} for who, t in eng.items()}
+    assert cycles["admin"] == cycles["ava"] == {"2025-W08", "2026-W40-embargo"}
+
+
+_SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Boolean,
+                  $orderBy: PaginationOrderBy) {
+  searchIssues(term: $term, filter: $filter, teamId: $teamId, includeComments: $c,
+               orderBy: $orderBy) {
+    totalCount
+    nodes { identifier metadata state { name } }
+    archivePayload { archive totalCount databaseVersion includesDependencies }
+  }
+}"""
+
+
+@pytest.mark.parametrize(
+    "variables, caller, identifiers, total",
+    [
+        # the identifier in any case, scored 1 and ahead of the word matches
+        ({"term": "eng-101"}, "admin", ["ENG-101"], 1),
+        # porter-stemmed, as real matched "familiarity" to "familiar"
+        ({"term": "bursting"}, "admin", ["ENG-101"], 1),
+        # any word matches
+        ({"term": "compaction selects"}, "admin", ["DES-77", "ENG-102"], 2),
+        # comments are searched unless `includeComments: false`
+        ({"term": "reproduced"}, "admin", ["ENG-101"], 1),
+        ({"term": "reproduced", "c": False}, "admin", [], 0),
+        # `filter` narrows the nodes and not the total
+        ({"term": "50ms", "filter": {"number": {"eq": 102}}}, "admin", ["ENG-102"], 2),
+        # newest first under `orderBy`
+        ({"term": "50ms", "orderBy": "createdAt"}, "admin", ["ENG-102", "ENG-101"], 2),
+        ({"term": "50ms", "teamId": synth.linear_team_id("design")}, "admin", [], 0),
+        ({"term": "50ms", "teamId": synth.linear_id("no team")}, "admin", [], 0),
+        # an issue the caller cannot read is no match, its comments included
+        ({"term": "rotate rotation"}, "admin", ["ENG-103"], 1),
+        ({"term": "rotate rotation"}, "ava@acme.com", [], 0),
+    ],
+)
+def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, identifiers, total):
+    """The answers measured in the docstrings of `store.search_linear_issues` and
+    `resolve_search_issues`, over the corpus's own words."""
+    h = admin_h if caller == "admin" else {"Authorization": linear_user_token(tokens_yaml, caller)}
+    r = gql(client, _SEARCH, h, **variables).json()
+    assert "errors" not in r, r["errors"]
+    found = r["data"]["searchIssues"]
+    nodes = found["nodes"]
+    served = [n["identifier"] for n in nodes]
+    assert (served if "orderBy" in variables else sorted(served)) == identifiers
+    assert found["totalCount"] == total
+    assert all(n["state"]["name"] for n in nodes)
+    assert all(n["metadata"]["context"] == {} and 0 <= n["metadata"]["score"] <= 1 for n in nodes)
+    if variables["term"].upper() in served:
+        assert nodes[0]["metadata"]["score"] == 1
+    assert found["archivePayload"] == {
+        "archive": "[]",
+        "totalCount": 0,
+        "databaseVersion": 0,
+        "includesDependencies": [],
+    }
+
+
+@pytest.mark.parametrize("variables", [{"term": ""}, {"term": "x", "teamId": "ENG"}])
+def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables):
+    """An empty term and a team key for `teamId`, each refused as `resolve_search_issues`
+    records."""
+    r = gql(client, _SEARCH, admin_h, **variables).json()
+    assert r["data"] is None
+    assert r["errors"][0]["message"] == "Argument Validation Error"
+
+
+# The read documents mirage 0.0.7's `LinearVFS` sends (`mirage.core.linear.queries`), trimmed to
+# what each selects past what other tests cover.
+_MIRAGE_DOCUMENTS = {
+    "Teams": "query { teams(first: 50) { nodes { id key name description timezone updatedAt"
+    " states { nodes { id name type } } } pageInfo { hasNextPage endCursor } } }",
+    "TeamMembers": 'query { team(id: "ENG") { members(first: 50) { nodes { id name displayName'
+    " email active admin url updatedAt } pageInfo { hasNextPage endCursor } } } }",
+    "TeamProjects": 'query { team(id: "ENG") { projects(first: 50) { nodes { id name description'
+    " status { type } url updatedAt lead { id } } pageInfo { hasNextPage endCursor } } } }",
+    "TeamCycles": 'query { team(id: "ENG") { cycles(first: 50) { nodes { id name number startsAt'
+    " endsAt updatedAt } pageInfo { hasNextPage endCursor } } } }",
+    "TeamLabels": 'query { team(id: "ENG") { labels(first: 50) { nodes { id name color }'
+    " pageInfo { hasNextPage endCursor } } } }",
+    "TeamDocuments": "query($teamId: ID!) { documents(filter: {team: {id: {eq: $teamId}}}, first: 50)"
+    " { nodes { id title content url createdAt updatedAt project { id name }"
+    " creator { id name email } } pageInfo { hasNextPage endCursor } } }",
+    "IssueSearch": 'query { searchIssues(term: "burst", first: 50) { nodes { id identifier title'
+    " state { id name } assignee { id displayName email } url } } }",
+    "IssueLookup": 'query { issues(filter: {team: {key: {eq: "ENG"}}, number: {eq: 101}}, first: 1)'
+    " { nodes { id identifier } } }",
+}
+
+
+@pytest.mark.parametrize("name", list(_MIRAGE_DOCUMENTS))
+def test_mirage_linear_documents_are_answered(client, admin_h, name):
+    variables = {"teamId": synth.linear_team_id("engineering")} if name == "TeamDocuments" else {}
+    r = gql(client, _MIRAGE_DOCUMENTS[name], admin_h, **variables)
+    assert r.status_code == 200
+    assert "errors" not in r.json(), r.json()["errors"]
+    if name == "TeamDocuments":
+        # The page `resolve_documents` records a workspace without documents answering.
+        assert r.json()["data"]["documents"] == {
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+    if name == "IssueLookup":
+        assert r.json()["data"]["issues"]["nodes"][0]["identifier"] == "ENG-101"
 
 
 def test_linear_priority_is_linears_numeric_scale(client, admin_h):
@@ -2075,6 +2245,10 @@ def test_number_comparators_are_pinned_at_their_boundary(fclient):
     assert ids(fclient, "{priority: {gte: 2}}") == ["DES-1", "ENG-2"]  # includes 2
     assert ids(fclient, "{priority: {in: [1, 4]}}") == ["DES-1", "ENG-1"]
     assert ids(fclient, "{priority: {nin: [1, 4]}}") == ["ENG-2"]
+    # `number` is the identifier's digits, the lookup mirage sends beside `team.key`.
+    assert ids(fclient, "{number: {eq: 1}}") == ["DES-1", "ENG-1"]
+    assert ids(fclient, "{number: {gt: 1}}") == ["ENG-2"]
+    assert ids(fclient, '{team: {key: {eq: "ENG"}}, number: {eq: 2}}') == ["ENG-2"]
 
 
 def test_null_comparator_on_a_nullable_number(fclient):
@@ -3742,10 +3916,9 @@ def test_counts_are_served_as_json_integers(fclient):
 
 def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
     """All four are non-null, so a declaration with nothing behind it voids the whole result. A
-    real team answers `initiativesEnabled: false` (measured 2026-09-07), and `_team` gives the
-    reason `viewerCanJoin` is `false`; the caller here is in two teams, so leaving one does not
-    leave it without an active team; Backlot serves no project resources, so `resourceCount` is a
-    count rather than a stand-in."""
+    real team answers `initiativesEnabled: false` (measured 2026-09-07); the admin token is in no
+    team, so it may join this one and has none to leave; Backlot serves no project resources, so
+    `resourceCount` is a count rather than a stand-in."""
     r = post(
         fclient,
         '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin viewerCanLeave }'
@@ -3760,7 +3933,7 @@ def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient)
         team["viewerCanLeave"],
         d["project"]["resourceCount"],
     )
-    assert served == (False, False, True, 0)
+    assert served == (False, True, False, 0)
 
 
 _AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
@@ -3816,11 +3989,12 @@ def test_supports_agent_sessions_declares_linears_default(fclient):
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
 
 
-def test_linear_viewer_membership_is_the_callers_own(tmp_path):
-    """The measurement above `_membership`: a member of a workspace's one team is answered its
-    membership, `viewerCanLeave: false`, and the same membership again from `teamMembership(id:)`,
-    the query `@linear/sdk`'s `team.viewerMembership` accessor sends. ava sees one of the corpus's
-    two teams, so it is the teams she can see that `viewerCanLeave` counts."""
+@pytest.mark.parametrize("ava_groups", [[], ["design"]], ids=["one team", "two teams"])
+def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
+    """The measurements above `_team_groups`. A team's members are its group's, which the roster
+    states: bo is in engineering without a single issue, and ava, assigned a design issue, is no
+    member of design until the roster puts her in it. ava's membership in a team she is in is the
+    one `teamMembership(id:)` finds; in the team she only sees, she has none and may join it."""
     sealed = {
         "source_type": "linear",
         "doc_id": "lin-sealed",
@@ -3831,19 +4005,69 @@ def test_linear_viewer_membership_is_the_callers_own(tmp_path):
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
     }
-    with corpus_client(tmp_path, [*LINEAR_CORPUS, sealed]) as (client, _settings):
+    design = {
+        "source_type": "linear",
+        "doc_id": "lin-design",
+        "team": "design",
+        "group": "design",
+        "title": "Select states",
+        "content": "Focus rings.",
+        "author_email": "mia@acme.com",
+        "visibility": "public",
+        "identifier": "DES-1",
+        "assignee": "ava@acme.com",
+    }
+    roster = {
+        "departments": {
+            "Engineering": [
+                {"name": "Ava Chen", "email": "ava@acme.com", "groups": ava_groups},
+                {"name": "Bo Ryu", "email": "bo@acme.com"},
+            ],
+            "Design": [{"name": "Mia Park", "email": "mia@acme.com"}],
+            "People": [{"name": "Hana Lee", "email": "hana@acme.com"}],
+        }
+    }
+    records = [*LINEAR_CORPUS, sealed, design]
+    with corpus_client(tmp_path, records, roster=roster) as (client, _settings):
         users = client.get("/_meta/users").json()["users"]
         h = {"Authorization": next(u["token"] for u in users if u["email"] == "ava@acme.com")}
-        q = "{ viewer { id createdAt } teams { nodes { id createdAt viewerCanLeave"
-        d = gql(client, q + " viewerMembership { %s } } } }" % _MEMBERSHIP, h).json()["data"]
-        (team,) = d["teams"]["nodes"]
-        m = team["viewerMembership"]
-        assert team["viewerCanLeave"] is False
-        assert (m["user"]["id"], m["team"]["id"]) == (d["viewer"]["id"], team["id"])
-        assert (m["owner"], m["archivedAt"], m["sortOrder"]) == (False, None, 0)
-        assert m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
-        by_id = gql(client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h)
-        assert by_id.json()["data"]["teamMembership"] == m
+        q = (
+            "{ viewer { id createdAt } teams { nodes { key id createdAt viewerCanJoin"
+            " viewerCanLeave members { nodes { email createdAt id } }"
+            " viewerMembership { %s } } } }" % _MEMBERSHIP
+        )
+        d = gql(client, q, h).json()["data"]
+        teams = {t["key"]: t for t in d["teams"]["nodes"]}
+        assert list(teams) == ["DES", "ENG"]  # blackops is hidden from ava
+        for team in teams.values():
+            order = [(m["createdAt"], m["id"]) for m in team["members"]["nodes"]]
+            assert order == sorted(order, reverse=True)
+        members = {k: {m["email"] for m in t["members"]["nodes"]} for k, t in teams.items()}
+        assert members["ENG"] == {"ava@acme.com", "bo@acme.com"}
+        in_design = bool(ava_groups)
+        assert members["DES"] == {"mia@acme.com"} | ({"ava@acme.com"} if in_design else set())
+        mine = ["DES", "ENG"] if in_design else ["ENG"]
+        for key, team in teams.items():
+            m = team["viewerMembership"]
+            assert (team["viewerCanJoin"], team["viewerCanLeave"]) == (
+                key not in mine,
+                key in mine and len(mine) > 1,
+            )
+            if key not in mine:
+                assert m is None
+                other = synth.linear_team_membership_id("design", d["viewer"]["id"])
+                miss = gql(client, "{ teamMembership(id: %s) { id } }" % lit(other), h).json()
+                assert miss["errors"][0]["message"] == "Entity not found: TeamMembership"
+                continue
+            assert (m["user"]["id"], m["team"]["id"]) == (d["viewer"]["id"], team["id"])
+            assert (m["owner"], m["archivedAt"], m["sortOrder"]) == (False, None, mine.index(key))
+            assert (
+                m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
+            )
+            by_id = gql(
+                client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h
+            )
+            assert by_id.json()["data"]["teamMembership"] == m
         # A lone surrogate is answered as any other unknown id; the raw body carries it as JSON's
         # `\ud800` escape, which a client encoding the string as UTF-8 first cannot send.
         for x in (synth.linear_id("nope"), "a\ud800b"):

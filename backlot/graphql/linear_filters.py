@@ -842,6 +842,8 @@ def _issue_parts(conn, flt: dict, team_keys: dict | None) -> tuple[str, list, bo
         # No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 -- the
         # real API answers `Field "branchName" is not defined by type "IssueFilter"`), so this
         # compiled a predicate no client written against Linear could ever send.
+        elif key == "number":
+            add(*_Comparator(store.LINEAR_NUMBER_EXPR).render(spec))
         elif key == "priority":
             # Against the COALESCE the field is served with, so `priority: {eq: 0}` finds an issue
             # whose column is NULL and `Issue.priority` reads 0 (see store.LINEAR_PRIORITY_EXPR).

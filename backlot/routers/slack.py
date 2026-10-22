@@ -189,6 +189,7 @@ _P_REACTION_LIST = [
     qp("page", "integer"),
     qp("limit", "integer"),
     qp("cursor"),
+    qp("user"),
 ]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
@@ -2336,6 +2337,46 @@ def _permalink(channel_name: str, row) -> str:
     return link
 
 
+def _reacted_by(conn, address: str) -> list[tuple[str, str]]:
+    """``(channel, ts)`` of every message this person has reacted to, most recent first.
+
+    Two sources, because a reaction can come from either: the overlay's `reactions` patches,
+    ordered by the rowid their last write gave them, and then the corpus's own column. The
+    corpus side is prefiltered in SQL on the address appearing in the stored JSON, so the scan
+    is one pass over a column rather than a decode of every message.
+    """
+    patch = overlay.table_names("slack")["patch"]
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in conn.execute(
+        f"SELECT channel, ts, value FROM ov.{patch} WHERE field = 'reactions' ORDER BY rowid DESC"
+    ):
+        try:
+            reactions = json.loads(row["value"] or "[]")
+        except ValueError:
+            continue
+        key = (row["channel"], row["ts"])
+        seen.add(key)
+        if any(_has_reacted(r, address) for r in reactions):
+            out.append(key)
+    like = f'%"{address}"%'
+    for row in conn.execute(
+        f"SELECT channel, ts, reactions FROM {store.merged_source(conn, 'slack')} "
+        "WHERE reactions IS NOT NULL AND reactions LIKE ? ORDER BY created_ts DESC",
+        (like,),
+    ):
+        key = (row["channel"], row["ts"])
+        if key in seen:  # the overlay already answered for this message
+            continue
+        try:
+            reactions = json.loads(row["reactions"] or "[]")
+        except ValueError:
+            continue
+        if any(_has_reacted(r, address) for r in reactions):
+            out.append(key)
+    return out
+
+
 def _same_address(a: str, b: str) -> bool:
     """Whether two stored reactor addresses are the same person.
 
@@ -2362,16 +2403,20 @@ def _reaction_target(request: Request, conn, caller: Caller):
     """``(channel_name, ts, row, None)`` for a reaction's message, else an error in the last slot.
 
     Slack addresses a reaction target three ways — `channel` + `timestamp`, `file`, or
-    `file_comment` — and answers `no_item_specified` when none is given. Backlot has no file
-    corpus (see search.files), so the two file forms resolve to nothing and are answered
-    `message_not_found` rather than a shape it cannot back.
+    `file_comment`. Backlot has no file corpus (see search.files), so the two file forms resolve
+    to nothing and are answered `message_not_found` rather than a shape it cannot back.
 
-    The channel is checked before the message, so `channel_not_found` is the answer for a caller
-    outside it whether or not the ts they named is real. A ts that resolved differently would let
-    them confirm a message exists in a channel they cannot read.
+    A missing `channel` or `timestamp` is NAMED, not `no_item_specified`. Measured against
+    slack.com on 2026-10-22 on `reactions.add`: neither argument answers `invalid_arguments`
+    carrying a line for `timestamp` and then one for `channel`; `channel` alone names
+    `timestamp`; `timestamp` alone names `channel`.
+
+    The channel is then checked before the message, so `channel_not_found` is the answer for a
+    caller outside it whether or not the ts they named is real. A ts that resolved differently
+    would let them confirm a message exists in a channel they cannot read.
     """
-    if not _param(request, "channel") and not _param(request, "timestamp"):
-        return None, None, None, _err("no_item_specified")
+    if err := _missing_argument(request, "timestamp", "channel"):
+        return None, None, None, err
     name, err = _writable_channel(request, conn, caller)
     if err is not None:
         return None, None, None, err
@@ -2391,8 +2436,9 @@ async def reactions_add(request: Request):
     Errors quoted from `slack_web_openapi_v2.json`,
     ``paths./reactions.add.post.responses.default``: `bad_timestamp`, `message_not_found`,
     `no_item_specified`, `invalid_name`, `already_reacted`, `too_many_emoji`,
-    `too_many_reactions`. Backlot answers `message_not_found`, `no_item_specified` and
-    `invalid_name`. The two ceilings are workspace limits no corpus states, and `bad_timestamp` is
+    `too_many_reactions`. Backlot answers `message_not_found` and `invalid_name`;
+    `no_item_specified` is in the enum but is not what real answers for a missing argument
+    (`_reaction_target`). The two ceilings are workspace limits no corpus states, and `bad_timestamp` is
     not distinguished: a `timestamp` that does not name a message is `message_not_found` whether it
     is malformed or merely absent.
 
@@ -2415,7 +2461,10 @@ async def reactions_add(request: Request):
     name, ts, row, err = _reaction_target(request, conn, caller)
     if err is not None:
         return err
-    emoji = (_param(request, "name") or "").strip()
+    # Not stripped: measured 2026-10-22, ` eyes ` is `invalid_name` on real where stripping it
+    # reacts with `eyes`. `:eyes:` and `EYES` are refused there too, which needs the emoji set
+    # Backlot does not have and stays a recorded gap.
+    emoji = _param(request, "name") or ""
     if not emoji:
         return _err("invalid_name")
     author, _uid_, _bot = _writer(caller)
@@ -2466,7 +2515,7 @@ async def reactions_remove(request: Request):
     name, ts, row, err = _reaction_target(request, conn, caller)
     if err is not None:
         return err
-    emoji = (_param(request, "name") or "").strip()
+    emoji = _param(request, "name") or ""
     author, _uid_, _bot = _writer(caller)
 
     def drop(fresh):
@@ -2527,9 +2576,15 @@ async def reactions_list(request: Request):
 
     Errors quoted from the spec's ``default`` response: `user_not_found`.
 
-    Only reactions left through this API are listed. A reaction the corpus shipped is part of the
-    scene the corpus describes rather than something this caller did, so reading the overlay's own
-    patches is what keeps the answer about them.
+    A reaction the CORPUS states is listed too: measured against slack.com on 2026-10-22, 10 of
+    the 13 items real answered were reactions left long before the probe. Only reactions this
+    API wrote would answer a fresh server with an empty list where real answers a history.
+
+    The most recent is first. Real listed Y, Z, X for reactions left to X, then Z, then Y, so an
+    overlay patch is ordered by the rowid its last write gave it (`INSERT OR REPLACE` moves it),
+    and the corpus's own come after, in the order the corpus states.
+
+    `user` names whose reactions to list, and an id nobody has is `user_not_found`.
 
     Measured 2026-10-21: the page is `limit` items long and carries `response_metadata`, with no
     `paging` object. `count` and `page` are read and refused by the same rule but change neither
@@ -2560,26 +2615,23 @@ async def reactions_list(request: Request):
     if offset is None:
         return _err("invalid_cursor")
     author, _uid_, _bot = _writer(caller)
+    if wanted := _param(request, "user"):
+        author = next(
+            (e for e in store.all_user_emails(conn) if synth.slack_user_id(e) == wanted), None
+        ) or (SERVICE_EMAIL if wanted == SERVICE_USER_ID else None)
+        if author is None:
+            return _err("user_not_found")
     ids = auth.visible_ids(request, caller)
-    patch = overlay.table_names("slack")["patch"]
     items = []
-    for p in conn.execute(
-        f"SELECT channel, ts, value FROM ov.{patch} WHERE field = 'reactions' ORDER BY channel, ts"
-    ).fetchall():
-        try:
-            reactions = json.loads(p["value"] or "[]")
-        except ValueError:
-            continue
-        if not any(_has_reacted(r, author) for r in reactions):
-            continue
-        row = store.document_by_key(conn, "slack", (p["channel"], p["ts"]), ids)
+    for channel, ts in _reacted_by(conn, author):
+        row = store.document_by_key(conn, "slack", (channel, ts), ids)
         if row is None:  # deleted, or no longer visible to this caller
             continue
         items.append(
             {
                 "type": "message",
-                "channel": synth.slack_channel_id(p["channel"]),
-                "message": _message(row) | {"permalink": _permalink(p["channel"], row)},
+                "channel": synth.slack_channel_id(channel),
+                "message": _message(row) | {"permalink": _permalink(channel, row)},
             }
         )
     limit = counts["limit"] if counts["limit"] > 0 else get_settings().default_page_size

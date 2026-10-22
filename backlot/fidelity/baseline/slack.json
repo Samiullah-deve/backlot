@@ -2856,10 +2856,6 @@
         "token": {
           "kind": "missing_param",
           "severity": "gap"
-        },
-        "user": {
-          "kind": "missing_param",
-          "severity": "gap"
         }
       },
       "fields": {

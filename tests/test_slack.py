@@ -4701,10 +4701,44 @@ def test_reacting_to_an_unreadable_message_does_not_reveal_it(wclient, tokens, r
     assert real == invented == {"ok": False, "error": "channel_not_found"}
 
 
-def test_reacting_with_no_item_is_no_item_specified(wclient, tokens):
+def test_reacting_with_no_item_names_the_arguments_that_are_missing(wclient, tokens):
+    # `_reaction_target` records the measurement: real names them rather than answering
+    # `no_item_specified`, and `timestamp` comes before `channel`.
     h = _uh(tokens, "ava@acme.com")
-    j = wclient.post("/slack/api/reactions.add", headers=h, data={"name": "tada"}).json()
-    assert j == {"ok": False, "error": "no_item_specified"}
+    cid = synth.slack_channel_id("incidents")
+    assert wclient.post("/slack/api/reactions.add", headers=h, data={"name": "tada"}).json() == {
+        "ok": False,
+        "error": "invalid_arguments",
+        "response_metadata": {
+            "messages": [
+                "[ERROR] missing required field: timestamp",
+                "[ERROR] missing required field: channel",
+            ]
+        },
+    }
+    for sent, named in (
+        ({"channel": cid}, "timestamp"),
+        ({"timestamp": "1.000001"}, "channel"),
+    ):
+        j = wclient.post(
+            "/slack/api/reactions.add", headers=h, data={"name": "tada", **sent}
+        ).json()
+        assert j["response_metadata"]["messages"] == [f"[ERROR] missing required field: {named}"]
+    # A padded name is not normalised into the bare one real would have accepted. Real refuses
+    # ` eyes ` outright, which needs the emoji set and stays a recorded gap; what must not happen
+    # is silently reacting with `eyes`.
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "padded"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": " eyes "},
+    )
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()
+    assert [r["name"] for r in got["message"]["reactions"]] == [" eyes "]
 
 
 def test_reactions_list_is_the_callers_own(wclient, tokens):
@@ -4731,6 +4765,22 @@ def test_reactions_list_is_the_callers_own(wclient, tokens):
     assert j["ok"] is True
     listed = [i["message"]["ts"] for i in j["items"] if i["type"] == "message"]
     assert mine in listed and theirs not in listed
+    # A reaction the CORPUS states is this caller's too: ava reacted to a message in the sample.
+    corpus_reacted = [t for t in listed if t not in (mine, theirs)]
+    assert corpus_reacted, listed
+    # The most recent is first, which the one just written is.
+    assert listed[0] == mine
+    # `user` names whose list to answer, and an id nobody has is `user_not_found`.
+    as_bob = wclient.post(
+        "/slack/api/reactions.list",
+        headers=ava,
+        data={"user": synth.slack_user_id("bob@acme.com")},
+    ).json()
+    assert theirs in [i["message"]["ts"] for i in as_bob["items"]]
+    assert mine not in [i["message"]["ts"] for i in as_bob["items"]]
+    assert wclient.post(
+        "/slack/api/reactions.list", headers=ava, data={"user": "U00000000"}
+    ).json() == {"ok": False, "error": "user_not_found"}
     # The answer carries a cursor and no `paging` object.
     assert "paging" not in j and j["response_metadata"]["next_cursor"] == ""
     # A number real cannot read is refused, and the refusal names each field in this order
@@ -4754,14 +4804,12 @@ def test_reactions_list_is_the_callers_own(wclient, tokens):
         headers=ava,
         data={"channel": cid, "timestamp": theirs, "name": "eyes"},
     )
-    # The order the two fall in is the `ts` order, and two posted in one second have no fixed one
-    # (`store.slack_next_ts` takes the fraction from a hash), so the page is read against the
-    # whole list rather than against the order they were posted in.
+    # The page is read against the whole list rather than against any assumed order.
     whole = [
         i["message"]["ts"]
         for i in wclient.post("/slack/api/reactions.list", headers=ava).json()["items"]
     ]
-    assert sorted(whole) == sorted([mine, theirs])
+    assert {mine, theirs} <= set(whole)
     one = wclient.post(
         "/slack/api/reactions.list", headers=ava, data={"limit": "1", "count": "2"}
     ).json()
@@ -4771,7 +4819,7 @@ def test_reactions_list_is_the_callers_own(wclient, tokens):
         headers=ava,
         data={"limit": "1", "cursor": one["response_metadata"]["next_cursor"]},
     ).json()
-    assert [i["message"]["ts"] for i in rest["items"]] == whole[1:]
+    assert [i["message"]["ts"] for i in rest["items"]] == whole[1:2]
     # A `limit` at or below zero is the default page, not an empty one.
     for value in ("0", "-1"):
         zero = wclient.post("/slack/api/reactions.list", headers=ava, data={"limit": value}).json()

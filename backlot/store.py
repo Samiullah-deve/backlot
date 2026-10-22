@@ -30,6 +30,7 @@ import sqlite3
 import unicodedata
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 from backlot import synth
 
@@ -1212,6 +1213,8 @@ def merged_source(
     if source_type not in WRITABLE or not overlay.is_attached(conn):
         return tbl if alias == tbl else f"{tbl} {alias}"
     names = overlay.table_names(source_type)
+    if not _overlay_holds_anything(conn, names):
+        return tbl if alias == tbl else f"{tbl} {alias}"
     patchable = PATCHABLE.get(source_type, frozenset())
     on = " AND ".join(f"x.{c} = m.{c}" for c in id_columns(source_type))
     cols = []
@@ -1474,6 +1477,23 @@ def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
         if fraction not in taken:
             return f"{int(epoch_sec)}.{fraction:06d}"
     raise RuntimeError(f"slack: channel {channel!r} has no free ts fraction in second {epoch_sec}")
+
+
+def _overlay_holds_anything(conn, names: dict[str, str]) -> bool:
+    """Whether the overlay holds a written row, a patch or a tombstone for this source.
+
+    Until it does, every reader gets the bare table back and runs character-for-character the
+    query it ran before writes existed. The union is not free on a corpus of any size: with the
+    overlay attached and empty, `slack_latest_ts` over a 200,000-message channel took 202 ms
+    against 1.4 ms on the table, because a compound subquery carrying two correlated lookups per
+    row is not something the (channel, ts) index can answer.
+
+    Three `LIMIT 1` probes, which stop at the first page of each table.
+    """
+    return any(
+        conn.execute(f"SELECT 1 FROM ov.{names[kind]} LIMIT 1").fetchone() is not None
+        for kind in ("doc", "patch", "tombstone")
+    )
 
 
 def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
@@ -2904,7 +2924,14 @@ def _fts_query_terms(conn, source_type: str, query: str) -> list[str]:
 
 
 def _corpus_bm25(
-    conn, source_type: str, query: str, rowid: int, *, schema: str = "ov", terms=None
+    conn,
+    source_type: str,
+    query: str,
+    rowid: int,
+    *,
+    schema: str = "ov",
+    terms=None,
+    stats=None,
 ) -> float:
     """bm25 for one row of ``schema``'s index, computed from the CORPUS index's statistics.
 
@@ -2919,39 +2946,98 @@ def _corpus_bm25(
     tokenizer that indexed the row is the one that counts it. Only N, n and the average document
     length come from the corpus — which is exactly the substitution this function exists to make.
 
-    ``terms`` is the already-tokenised query, so a caller scoring many rows for one query pays
-    :func:`_fts_query_terms` once rather than per row.
+    ``terms`` is the already-tokenised query and ``stats`` the corpus's own counts, so a caller
+    scoring many rows for one query pays :func:`_fts_query_terms` and :func:`_corpus_stats` once
+    rather than per row.
 
     Returns a negative number, matching fts5's sign convention. With ``schema="main"`` it
     reproduces `bm25()` exactly, which is how it is tested.
     """
     fts = _fts_table(source_type)
     ov_fts = fts if schema == "main" else f"{source_type}_fts_ov"
-    stats_row = _vocab(conn, "main", fts, "row")
     inst = _vocab(conn, schema, ov_fts, "instance")
+    terms = _fts_query_terms(conn, source_type, query) if terms is None else terms
+    stats = _corpus_stats(conn, source_type, terms) if stats is None else stats
 
-    n_rows = conn.execute(f"SELECT COUNT(*) FROM main.{fts}").fetchone()[0]
-    if not n_rows:
+    if not stats.n_rows:
         return 0.0
-    total_tokens = conn.execute(f"SELECT SUM(cnt) FROM {stats_row}").fetchone()[0] or 0
-    avgdl = (total_tokens / n_rows) or 1.0
     doclen = conn.execute(f"SELECT COUNT(*) FROM {inst} WHERE doc = ?", (rowid,)).fetchone()[0]
 
     score = 0.0
-    for term in _fts_query_terms(conn, source_type, query) if terms is None else terms:
+    for term in terms:
         freq = conn.execute(
             f"SELECT COUNT(*) FROM {inst} WHERE doc = ? AND term = ?", (rowid, term)
         ).fetchone()[0]
         if not freq:
             continue
-        hit = conn.execute(f"SELECT doc FROM {stats_row} WHERE term = ?", (term,)).fetchone()
-        n_docs = hit[0] if hit else 0
-        idf = math.log((n_rows - n_docs + 0.5) / (n_docs + 0.5))
+        n_docs = stats.n_docs.get(term, 0)
+        idf = math.log((stats.n_rows - n_docs + 0.5) / (n_docs + 0.5))
         if idf <= 0.0:
             idf = _BM25_MIN_IDF
-        denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / avgdl)
+        denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / stats.avgdl)
         score += idf * (freq * (_BM25_K1 + 1)) / denom
     return -score
+
+
+class _CorpusStats(NamedTuple):
+    n_rows: int
+    avgdl: float
+    n_docs: dict[str, int]
+
+
+def _corpus_stats(conn, source_type: str, terms) -> _CorpusStats:
+    """N, the average document length and each term's document count, off the CORPUS index.
+
+    Read once per query rather than once per scored row: they are properties of a database opened
+    `mode=ro`, and reading them per row is what a search pays for every overlay hit. On a
+    201,000-message corpus `COUNT(*)` over the index and `SUM(cnt)` over its vocabulary are about
+    55 ms and 66 ms each, so a search matching 50 written rows spent over two seconds recounting
+    one unchanging number.
+    """
+    fts = _fts_table(source_type)
+    stats_row = _vocab(conn, "main", fts, "row")
+    n_rows, avgdl = _corpus_size(conn, source_type)
+    if not n_rows:
+        return _CorpusStats(0, 1.0, {})
+    counts = {}
+    for term in terms:
+        hit = conn.execute(f"SELECT doc FROM {stats_row} WHERE term = ?", (term,)).fetchone()
+        counts[term] = hit[0] if hit else 0
+    return _CorpusStats(n_rows, avgdl, counts)
+
+
+#: ``(rows, average document length)`` per corpus file and source. Keyed on the file's path, size
+#: and mtime rather than on the connection: `sqlite3.Connection` has no `__dict__` to hang state
+#: on, and `id()` is reused by CPython once an object is collected. A corpus opened `mode=ro`
+#: cannot change under a running server, and an `--append` that changes one moves both the size
+#: and the mtime, so a stale entry cannot be read.
+_CORPUS_SIZE: dict[tuple, tuple[int, float]] = {}
+
+
+def _corpus_size(conn, source_type: str) -> tuple[int, float]:
+    """How many documents the corpus index holds, and their average length in tokens.
+
+    Both are full passes — on a 201,000-message corpus, about 55 ms and 66 ms — and both are the
+    same answer for every row of every query against that file, so they are read once per corpus
+    rather than once per query.
+    """
+    fts = _fts_table(source_type)
+    key: tuple = (source_type,)
+    for _, name, path in conn.execute("PRAGMA database_list"):
+        if name == "main":
+            stat = Path(path).stat() if path else None
+            key = (source_type, path, stat.st_size, stat.st_mtime_ns) if stat else (source_type,)
+            break
+    if key in _CORPUS_SIZE:
+        return _CORPUS_SIZE[key]
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM main.{fts}").fetchone()[0]
+    if not n_rows:
+        return 0, 1.0
+    total = conn.execute(f"SELECT SUM(cnt) FROM {_vocab(conn, 'main', fts, 'row')}").fetchone()[0]
+    out = (n_rows, ((total or 0) / n_rows) or 1.0)
+    if len(key) > 1:  # an in-memory corpus has no file to key on, so it is not cached
+        _CORPUS_SIZE[key] = out
+    return out
 
 
 def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
@@ -2965,61 +3051,74 @@ def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
     no writes has no overlay index to query, and searching it must cost nothing it did not cost
     before.
     """
-    match = _overlay_match(
+    matched = _overlay_matches(
         conn, source_type, query, visible_ids, container=container, phrase=phrase
     )
-    if match is None:
+    if not matched:
         return []
-    sql, params = match
-    rows = conn.execute(f"SELECT o.*, f.rowid AS _ov_rowid {sql}", params).fetchall()
     terms = _fts_query_terms(conn, source_type, query)
-    return [(r, _corpus_bm25(conn, source_type, query, r["_ov_rowid"], terms=terms)) for r in rows]
+    stats = _corpus_stats(conn, source_type, terms)
+    return [
+        (row, _corpus_bm25(conn, source_type, query, rowid, terms=terms, stats=stats))
+        for row, rowid in matched
+    ]
 
 
-def _overlay_match(conn, source_type, query, visible_ids, *, container, phrase):
-    """``(FROM-and-WHERE sql, params)`` selecting the overlay documents this query matches, or
-    None where there are none to select -- a source outside :data:`WRITABLE`, no overlay
-    attached, or a query FTS5 reads as matching nothing.
+def _overlay_matches(conn, source_type, query, visible_ids, *, container, phrase) -> list:
+    """The overlay documents this query matches, each with the index rowid that scores it.
 
     One statement of the match, because a search asks it twice: once for the page it serves and
     once for the total it reports. Two spellings of one condition is a page and a total that
     disagree.
+
+    The index is asked FIRST and its keys then fetch the documents, rather than joining the index
+    to :func:`merged_source`. A compound subquery is not something SQLite can seek into, so the
+    join made it scan both sides of the union and build an automatic index over the result: on a
+    201,000-message corpus the count took 300 ms where the index lookup itself takes none. The
+    index holds only what the overlay wrote or re-indexed, so the keys are few whatever the
+    corpus's size.
     """
     from backlot import overlay
 
     if source_type not in WRITABLE or not overlay.is_attached(conn):
-        return None
+        return []
     m = _fts_match(query, phrase=phrase)
     if not m:
-        return None
-    names = overlay.table_names(source_type)
-    on = " AND ".join(f"o.{c} = f.{c}" for c in id_columns(source_type))
-    cont_sql, cont_p = "", []
+        return []
+    names, key = overlay.table_names(source_type), id_columns(source_type)
+    hits = {
+        tuple(row[c] for c in key): row["rowid"]
+        for row in conn.execute(
+            f"SELECT f.rowid AS rowid, {', '.join(f'f.{c} AS {c}' for c in key)} "
+            f"FROM ov.{names['fts']} f WHERE f.{names['fts']} MATCH ?",
+            (m,),
+        )
+    }
+    if not hits:
+        return []
+    where = " OR ".join(f"({' AND '.join(f'o.{c} = ?' for c in key)})" for _ in hits)
+    params: list = [v for k in hits for v in k]
+    cont_sql = ""
     if container is not None:
-        cont_sql, cont_p = f" AND o.{grouping_col(source_type)} = ?", [container]
+        cont_sql = f" AND o.{grouping_col(source_type)} = ?"
+        params.append(container)
     clause, cparams = _acl_clause(source_type, "o", visible_ids)
-    return (
-        f"FROM ov.{names['fts']} f JOIN ({merged_source(conn, source_type)}) o ON {on} "
-        f"WHERE f.{names['fts']} MATCH ?{cont_sql}{clause}",
-        [m, *cont_p, *cparams],
-    )
+    rows = conn.execute(
+        f"SELECT o.* FROM ({merged_source(conn, source_type)}) o WHERE ({where}){cont_sql}{clause}",
+        [*params, *cparams],
+    ).fetchall()
+    return [(r, hits[tuple(r[c] for c in key)]) for r in rows]
 
 
 def _overlay_hit_count(conn, source_type, query, visible_ids, *, container, phrase) -> int:
     """How many overlay documents match, for the caller that reports a total.
 
-    Counted in SQLite rather than scored: a total reads no score, so neither the row bodies nor
-    the per-row :func:`_corpus_bm25` that :func:`_overlay_hits` computes are needed to produce
-    it. With 1,500 written messages behind a `search.messages`, counting here took the call from
-    a median 991 ms to 488 ms.
+    The same matches the page is built from, counted rather than scored: a total reads no score,
+    so none of the per-row :func:`_corpus_bm25` work is done for it.
     """
-    match = _overlay_match(
-        conn, source_type, query, visible_ids, container=container, phrase=phrase
+    return len(
+        _overlay_matches(conn, source_type, query, visible_ids, container=container, phrase=phrase)
     )
-    if match is None:
-        return 0
-    sql, params = match
-    return conn.execute(f"SELECT COUNT(*) {sql}", params).fetchone()[0]
 
 
 def _corpus_not_reindexed(conn, source_type: str, alias: str) -> str:

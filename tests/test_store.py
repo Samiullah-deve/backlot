@@ -2643,7 +2643,12 @@ def test_merged_source_is_the_bare_table_with_no_overlay_attached(db):
     assert store.merged_source(db, "slack") == "slack_messages"
 
 
-def test_merged_source_aliases_to_the_corpus_table_name(ov_db):
+def test_merged_source_is_the_bare_table_until_something_is_written(ov_db):
+    # An attached overlay is not a written one, and the union is not free: `merged_source`
+    # records what it costs. Until a row, a patch or a tombstone exists, every reader gets the
+    # query it ran before writes existed.
+    assert store.merged_source(ov_db, "slack") == "slack_messages"
+    _post(ov_db, "incidents", "4000000000.000009", "ava@acme.com", "now there is one", 4000000000)
     # `_acl_clause` emits `_acl.channel = slack_messages.channel`, hard-referencing the table
     # name. If the alias ever stops matching, every merged read silently loses its ACL join.
     assert store.merged_source(ov_db, "slack").rstrip().endswith("AS slack_messages")

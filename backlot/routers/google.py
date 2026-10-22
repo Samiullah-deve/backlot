@@ -3800,14 +3800,24 @@ _P_SHEETS_STD = [
 ]
 
 
-# The messages a Sheets read answers with, each as the fields it declares: a field names the message
-# it holds, or is `None` for a scalar, an enum, a list of lists or a map. Written from the discovery
-# document by `scripts/gen_sheets_fields.py`.
-_SHEETS_FIELDS: dict[str, dict[str, str | None]] = json.loads(
-    (Path(__file__).resolve().parent.parent / "data" / "sheets_fields.json").read_text(
-        encoding="utf-8"
-    )
-)["schemas"]
+def _sheets_types() -> dict[str, dict[str, str | None]]:
+    """The messages a Sheets read answers with and every message they reach, each as its fields and
+    the message each holds (`None` for a scalar, an enum, a map or a list of lists): the `types`
+    `backlot diff` records in the `google_drive` baseline from the discovery document. A field only
+    Backlot serves is not one a mask may name."""
+    types = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))["types"]
+
+    def held(type_: str) -> str | None:
+        name = type_.strip("[]")
+        return name if name in types else None
+
+    return {
+        name: {f: held(m["type"]) for f, m in entry.get("fields", {}).items() if "type" in m}
+        for name, entry in types.items()
+    }
+
+
+_SHEETS_FIELDS = _sheets_types()
 
 
 def _gmask_paths(mask: str) -> list[tuple[str, ...]]:
@@ -4079,7 +4089,7 @@ async def sheets_get(spreadsheet_id: str, request: Request):
             ),
         },
     )
-    tree, comments = _sheets_mask(request, "Spreadsheet")
+    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     mode = (flags["commentsViewMode"] or [_PJ_COMMENTS_VIEW.names[0]])[-1]
     owned = _drive_owned_by(row["author_email"], caller.email)
@@ -4933,7 +4943,7 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     _sheets_alt(request)
     _require(request)
     major, render = _sheets_options(request)
-    tree, _ = _sheets_mask(request, "BatchGetValuesResponse")
+    tree, _ = _sheets_mask(request, "sheets.BatchGetValuesResponse")
     _row, sheets = _workbook(request, spreadsheet_id)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
@@ -4951,7 +4961,7 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
     _sheets_alt(request)
     _require(request)
     major, render = _sheets_options(request)
-    tree, _ = _sheets_mask(request, "ValueRange")
+    tree, _ = _sheets_mask(request, "sheets.ValueRange")
     _row, sheets = _workbook(request, spreadsheet_id)
     return _sheets_respond(request, _sheets_value_range(a1_range, sheets, major, render), tree)
 
@@ -5384,7 +5394,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     _sheets_alt(request)
     _require(request)
     body = protojson.read(await request.body(), _PJ_BATCH_GET_BY_FILTER)
-    tree, _ = _sheets_mask(request, "BatchGetValuesByDataFilterResponse")
+    tree, _ = _sheets_mask(request, "sheets.BatchGetValuesByDataFilterResponse")
     _row, sheets = _workbook(request, spreadsheet_id)
     render = body.get("value_render_option", 0)
     if not 0 <= render < len(_PJ_RENDER.names):
@@ -5449,7 +5459,7 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     _sheets_alt(request)
     caller = _require(request)
     body = protojson.read(await request.body(), _PJ_GET_BY_FILTER)
-    tree, comments = _sheets_mask(request, "Spreadsheet")
+    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
     owned = _drive_owned_by(row["author_email"], caller.email)

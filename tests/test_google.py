@@ -12,9 +12,7 @@ import csv
 import io
 import json
 import re
-import runpy
 import unicodedata
-from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
@@ -11092,36 +11090,6 @@ def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book, field
     )
     assert r.status_code == 200, r.text
     assert r.json() == {"valueRanges": want}
-
-
-def test_the_sheets_field_table_reads_a_map_as_a_leaf():
-    """`scripts/gen_sheets_fields.py` over a document shaped like the discovery one: a field holds
-    the message its `$ref` or its items' `$ref` names, and a map, a scalar and a list of lists hold
-    none; a message no root reaches is left out."""
-    script = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "gen_sheets_fields.py"))
-    leaf = {"type": "string"}
-    roots = {
-        "Spreadsheet": {"properties": {"sheets": {"type": "array", "items": {"$ref": "Sheet"}}}},
-        "ValueRange": {"properties": {"values": {"type": "array", "items": {"type": "array"}}}},
-        "BatchGetValuesResponse": {
-            "properties": {"valueRanges": {"items": {"$ref": "ValueRange"}}}
-        },
-        "BatchGetValuesByDataFilterResponse": {"properties": {"spreadsheetId": leaf}},
-        "Sheet": {
-            "properties": {
-                "criteria": {"type": "object", "additionalProperties": {"$ref": "Unreached"}},
-                "title": leaf,
-            }
-        },
-        "Unreached": {"properties": {"x": leaf}},
-    }
-    assert script["build"]({"schemas": roots})["schemas"] == {
-        "BatchGetValuesByDataFilterResponse": {"spreadsheetId": None},
-        "BatchGetValuesResponse": {"valueRanges": "ValueRange"},
-        "Sheet": {"criteria": None, "title": None},
-        "Spreadsheet": {"sheets": "Sheet"},
-        "ValueRange": {"values": None},
-    }
 
 
 @pytest.mark.parametrize(

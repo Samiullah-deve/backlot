@@ -4210,8 +4210,8 @@ def test_the_service_token_posts_as_a_bot(wclient, admin_h):
     ).json()
     assert edited["message"]["edited"]["user"] == "USERVICE0"
     # Every path that renders a stored author, not only the message builder: a search hit, and a
-    # thread's parent and reply authors. Each used to mint the id itself, so the same message came
-    # back as USERVICE0 from history and as a hash of the sentinel from search.
+    # thread's parent and reply authors. A path that mints the id itself answers the same message
+    # as USERVICE0 from history and as a hash of the sentinel from search.
     hit = [
         m
         for m in wclient.post(

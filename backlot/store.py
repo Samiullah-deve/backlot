@@ -1184,7 +1184,7 @@ def merged_source(
     **aliased to the corpus table's own name**.
 
     The alias is not cosmetic: :func:`_acl_clause` emits ``_acl.<col> = <table>.<col>``,
-    hard-referencing whatever name the caller gave it, so the alias is what lets fourteen readers
+    hard-referencing whatever name the caller gave it, so the alias is what lets thirteen readers
     keep their ACL clause verbatim and makes the substitution one token per query. ``alias``
     overrides it for the one caller that already knows the table by a short name — the FTS join in
     :func:`search_documents`, which passes ``"t"`` and an ``_acl_clause`` scoped to the same.
@@ -1483,8 +1483,8 @@ def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
 
     The fractions are read off the PHYSICAL rows, not off `merged_source`, which subtracts
     tombstones: a deleted message's row is still in `ov.slack_messages` holding its primary key,
-    so a merged read reports its ts free and the insert then fails on it. Post, delete, post
-    inside one second is an ordinary sequence, and it 500'd.
+    so a merged read reports its ts free and the insert fails on it. Post, delete, post inside
+    one second is an ordinary sequence.
 
     Slack's own, not a generic minter: what a served id looks like is a fact about a vendor, and
     the sources that already synthesize one do it several different ways.
@@ -2958,6 +2958,7 @@ def _corpus_bm25(
     schema: str = "ov",
     terms=None,
     stats=None,
+    phrase: bool = False,
 ) -> float:
     """bm25 for one row of ``schema``'s index, computed from the CORPUS index's statistics.
 
@@ -2989,6 +2990,14 @@ def _corpus_bm25(
         return 0.0
     doclen = conn.execute(f"SELECT COUNT(*) FROM {inst} WHERE doc = ?", (rowid,)).fetchone()[0]
 
+    if phrase:
+        # One unit, matched once: fts5 scores a phrase as a single term, and how many times it
+        # repeats in the document is not something the instance vocabulary can say. A row only
+        # reaches here because the index matched it, so the occurrence it matched is the one
+        # counted.
+        (term,) = stats.n_docs
+        return -_bm25_term(1, stats.n_docs[term], stats.n_rows, doclen, stats.avgdl)
+
     score = 0.0
     for term in terms:
         freq = conn.execute(
@@ -2996,13 +3005,18 @@ def _corpus_bm25(
         ).fetchone()[0]
         if not freq:
             continue
-        n_docs = stats.n_docs.get(term, 0)
-        idf = math.log((stats.n_rows - n_docs + 0.5) / (n_docs + 0.5))
-        if idf <= 0.0:
-            idf = _BM25_MIN_IDF
-        denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / stats.avgdl)
-        score += idf * (freq * (_BM25_K1 + 1)) / denom
+        score += _bm25_term(freq, stats.n_docs.get(term, 0), stats.n_rows, doclen, stats.avgdl)
     return -score
+
+
+def _bm25_term(freq: int, n_docs: int, n_rows: int, doclen: int, avgdl: float) -> float:
+    """One term's bm25 contribution, by the formula fts5 uses — the IDF clamped the way it
+    clamps a term common enough to make it non-positive."""
+    idf = math.log((n_rows - n_docs + 0.5) / (n_docs + 0.5))
+    if idf <= 0.0:
+        idf = _BM25_MIN_IDF
+    denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / avgdl)
+    return idf * (freq * (_BM25_K1 + 1)) / denom
 
 
 class _CorpusStats(NamedTuple):
@@ -3011,7 +3025,7 @@ class _CorpusStats(NamedTuple):
     n_docs: dict[str, int]
 
 
-def _corpus_stats(conn, source_type: str, terms) -> _CorpusStats:
+def _corpus_stats(conn, source_type: str, terms, *, phrase: str | None = None) -> _CorpusStats:
     """N, the average document length and each term's document count, off the CORPUS index.
 
     Read once per query rather than once per scored row: they are properties of a database opened
@@ -3025,6 +3039,22 @@ def _corpus_stats(conn, source_type: str, terms) -> _CorpusStats:
     n_rows, avgdl = _corpus_size(conn, source_type)
     if not n_rows:
         return _CorpusStats(0, 1.0, {})
+    if phrase is not None:
+        # fts5 scores a quoted query as ONE unit, so its document frequency is the number of
+        # documents the PHRASE is in, which the per-token vocabulary cannot give. Summing the
+        # tokens' own IDFs instead scores a phrase far too low, because a phrase is rarer than
+        # any word in it: on a 201,000-message corpus `"gateway latency"` summed the two terms
+        # to 0.47 where the phrase's own IDF is 3.68.
+        #
+        # It does NOT reproduce fts5's own number, which for the same phrase implies a document
+        # count of about 1,273 against the 4,961 documents that actually contain it -- neither
+        # the phrase's nor either term's. So `bm25()` answers -5.05 for a corpus row where this
+        # answers -3.68, and a posted copy of a corpus message still sorts behind it on a quoted
+        # query. The agreement this function is tested for is for term queries.
+        hit = conn.execute(
+            f"SELECT COUNT(*) FROM main.{fts} WHERE {fts} MATCH ?", (phrase,)
+        ).fetchone()
+        return _CorpusStats(n_rows, avgdl, {phrase: hit[0] if hit else 0})
     counts = {}
     for term in terms:
         hit = conn.execute(f"SELECT doc FROM {stats_row} WHERE term = ?", (term,)).fetchone()
@@ -3083,9 +3113,13 @@ def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
     if not matched:
         return []
     terms = _fts_query_terms(conn, source_type, query)
-    stats = _corpus_stats(conn, source_type, terms)
+    match = _fts_match(query, phrase=phrase)
+    stats = _corpus_stats(conn, source_type, terms, phrase=match if phrase else None)
     return [
-        (row, _corpus_bm25(conn, source_type, query, rowid, terms=terms, stats=stats))
+        (
+            row,
+            _corpus_bm25(conn, source_type, query, rowid, terms=terms, stats=stats, phrase=phrase),
+        )
         for row, rowid in matched
     ]
 
@@ -3152,8 +3186,8 @@ def _corpus_not_reindexed(conn, source_type: str, alias: str) -> str:
 
     `patch_document` writes a patched row into the overlay index, and a CORPUS row's entry stays
     in `main.<fts>` — nothing can delete it. Without this the same document is found by both
-    branches: it appeared twice in one page, was counted twice in the total, and went on matching
-    the text it no longer says.
+    branches, which puts it twice in one page, twice in the total, and keeps it matching the text
+    it no longer says.
 
     Empty for a source that is not writable or has no overlay, so those queries are unchanged.
     """

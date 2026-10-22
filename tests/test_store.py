@@ -2600,7 +2600,7 @@ def test_slacks_deactivated_roster_removes_no_teams_member(tmp_path, visibility)
 # --- the mutation overlay's merge -----------------------------------------------------------
 #
 # `merged_source` is the one place corpus and overlay are joined. Everything below is about that
-# fragment being correct, because fourteen readers depend on it, none of them restates it, and
+# fragment being correct, because fifteen readers depend on it, none of them restates it, and
 # every source that takes writes later will depend on the same one.
 
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Read and write Slack through the official slack_sdk. Self-contained: run it directly.
 
-One run exercises the whole surface: the reads, then all nine write methods, then the two
+One run exercises the whole surface: the reads, then the six methods that write and the
+three that read what they wrote, then the two
 `/_meta/overlay` routes an evaluation uses. Nothing reaches the corpus file — writes land in an
 in-memory overlay that dies with the server, and the reset at the end puts the corpus back, which
 is what lets one evaluation run start where the last one did. See docs/write-overlay.md.

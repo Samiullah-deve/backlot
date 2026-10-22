@@ -163,10 +163,11 @@ loop exists to catch, and it looks like success.
 
 ## 10. If the task writes, read the overlay back
 
-Slack serves nine write methods — `chat.postMessage`, `chat.postEphemeral`, `chat.update`,
-`chat.delete`, `chat.getPermalink`, `reactions.add`, `reactions.remove`, `reactions.get`,
-`reactions.list` — and a written message is a message: it comes back from `conversations.history`,
-`conversations.replies` and `search.messages` under the same ACL as the corpus around it.
+Slack serves six methods that write — `chat.postMessage`, `chat.postEphemeral`,
+`chat.update`, `chat.delete`, `reactions.add`, `reactions.remove` — and three that read what
+they wrote: `chat.getPermalink`, `reactions.get`, `reactions.list`. A written message is a
+message: it comes back from `conversations.history`, `conversations.replies` and
+`search.messages` under the same ACL as the corpus around it.
 
 The corpus file is never written. Writes land in an in-memory overlay belonging to that one
 server, which gives two things a run needs:

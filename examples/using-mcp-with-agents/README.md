@@ -22,7 +22,7 @@ service (like the other `examples/` dirs) — run the one you want:
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
   base-URL override (they hard-wire `slack.com`), so the bridge serves Backlot's Slack Web API
   (`/slack/api/*`) as tools instead. It is the one example whose agent **acts**: the bridge
-  serves the nine write methods too, so the agent is given a task to finish rather than a
+  serves the methods that write too, so the agent is given a task to finish rather than a
   question to answer — find the incident, find the runbook, reply in the thread, react — and the
   script then reads `/_meta/overlay` to print what it actually did, which is the record an
   evaluation grades. Retrieval is part of the task, not a separate mode: the reply cannot be

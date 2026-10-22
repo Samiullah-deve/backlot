@@ -32,9 +32,9 @@ def test_the_document_mirror_matches_the_corpus_table_exactly(sample_settings):
     # corpus table appears in the overlay without anyone remembering to add it. Restating the
     # twelve columns by hand is the drift this asserts against.
     #
-    # The whole row is compared, DEFAULT (index 4) included. Comparing only name/type/notnull/pk
-    # passed while the mirror silently dropped `thread_seq`'s `DEFAULT 0`, which made every insert
-    # that omitted the column fail — a mirror missing defaults is not a mirror.
+    # The whole row is compared, DEFAULT (index 4) included: a mirror that keeps
+    # name/type/notnull/pk but drops `thread_seq`'s `DEFAULT 0` fails every insert that omits
+    # the column, and is not a mirror.
     conn = store.connect_ro(sample_settings.db_path)
     overlay.attach(conn, "test_ov_mirror")
     for src in store.WRITABLE:

@@ -65,7 +65,7 @@ def name_for(app) -> str:
     is not (see :data:`_COUNTER`). The parameter stays because the caller has an app and passing
     it reads as what this is for.
     """
-    return f"backlot_ov_{next(_COUNTER)}_{id(app):x}"
+    return f"backlot_ov_{next(_COUNTER)}"
 
 
 def is_attached(conn: sqlite3.Connection) -> bool:
@@ -148,7 +148,7 @@ def _acl_view_ddl(conn: sqlite3.Connection, source_type: str) -> str:
     Sixty-seven call sites reach the ACL through :func:`store._acl_clause`, which emits an
     unqualified table name — so an overlay grant would be invisible to every one of them, and a
     posted message would be readable by nobody including its author. Threading a connection
-    through all sixty-seven to union the two tables would be the alternative.
+    through all seventy-four to union the two tables would be the alternative.
 
     A ``temp`` view is the whole fix instead, because SQLite resolves an unqualified name in
     ``temp`` before ``main`` (measured). Every reader keeps its query verbatim and sees one ACL

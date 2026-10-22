@@ -54,11 +54,9 @@ docs, `pyproject.toml` keywords.
 - Run the suite before pushing: `pytest -q`. The docs tests above fail CI exactly like code tests.
 - Also run `python scripts/prose_check.py` before pushing, and fix what it reports or say in the PR
   why a finding stands. CI shows the same findings only as warnings, and a run with them is green.
-- Vendor tests are written against a measurement where one is possible, and against the vendor's
-  own published spec where it is not — a refusal that needs a write scope on a real workspace, say.
-  Never against memory or this repo's earlier prose. Which of the two a claim rests on goes in the
-  docstring, because a published spec lags and omits (see `docs/fidelity.md`). Bring a test that
-  fails without your fix.
+- Vendor tests are written against measured responses, not vendor docs. A spec quote belongs in a
+  docstring as the source of a claim; it is not a substitute for asking the service. Bring a test
+  that fails without your fix.
 - Examples are self-contained: each script spins up its own throwaway server via
   `backlot.serve_or_connect` on a tiny in-code corpus. Keep new examples to that shape.
 

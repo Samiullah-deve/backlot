@@ -33,12 +33,12 @@ from typing import Any, Callable, Mapping
 from backlot.fidelity import (
     csdl_diff,
     google_discovery_diff,
+    google_walks,
     graphql_diff,
     hubspot_catalog,
     msgraph,
     openapi_diff,
     s3_probe,
-    sheets_walk,
     slack_docs,
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
@@ -127,7 +127,7 @@ class Spec:
     # fresh memory address into the file on every run.
     resolve_url: hubspot_catalog.Entry | None = None
     # A discovery document's reads to make of a running Backlot, each named by the method it is
-    # (`sheets_walk.run`). Set, the document's response types join the source's baseline as
+    # (`google_walks.sheets`). Set, the document's response types join the source's baseline as
     # `types` (`google_discovery_diff.types_measure`).
     walk: Callable[[float], list[tuple[str, Any]]] | None = None
 
@@ -487,7 +487,7 @@ GOOGLE_DISCOVERY = {
                 spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
                 mount=("/sheets/v4",),
                 strip="/sheets",
-                walk=sheets_walk.run,
+                walk=google_walks.sheets,
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/slides/v1/rest",

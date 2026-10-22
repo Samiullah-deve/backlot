@@ -348,10 +348,11 @@ The surface takes the shape of the contract:
 - **A Discovery document a walk reads** — `types` beside `operations`, keyed by the document's
   name and the message's (`sheets.Spreadsheet`): every message the operations' responses reach,
   with every field and the `type` it holds, since a `fields` mask is read against all of them and
-  no served schema answers that offline. Which reads to make is the document's `walk`
-  (`backlot.fidelity.sheets_walk` for Sheets). A message an answer was is `implemented`, each field
-  it carried `implemented` and each it did not `missing`, a gap; a message no answer reached is
-  `missing`, with no finding. There is no `root`: the operations are under `operations`.
+  no served schema answers that offline. Which reads to make is the document's `walk`, one of
+  `backlot.fidelity.google_walks` (`sheets` for Sheets). A message one of its answers was is
+  `implemented`, each field they carried `implemented` and each they did not `missing`, a gap; a
+  message none of them was is `missing`, with no finding. There is no `root`: the operations are
+  under `operations`.
 - **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and
   union member either side has under it, and every argument either side has on a field Backlot
   serves, each with a `status`, and `type` where only the vendor has the member. A type the vendor

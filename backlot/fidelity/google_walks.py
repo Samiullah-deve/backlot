@@ -1,10 +1,13 @@
-"""The Sheets half of the `google_drive` types comparison: which reads to make, over which corpus.
+"""The walks of the Google types comparison: for each discovery document a source measures the
+response types of, which reads to make of a running Backlot, over which corpus.
 
 Which method answers which message is the discovery document's to say (a method's `response`), so
-unlike Graph's walk this one names methods, not types. What it has to know is how to make each read
-carry everything it can: a grid holding each kind of cell a corpus states, a range that starts past
-the first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside
-it. A field none of these reads carries is reported missing, which is what the baseline records.
+unlike Graph's walk these name methods, not types. What each has to know is how to make its reads
+carry everything they can. A field none of them carries is reported missing, which is what the
+baseline records.
+
+`sheets` reads a grid holding each kind of cell a corpus states, a range that starts past the
+first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside it.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import httpx
 
 from backlot.fidelity.errors import FidelityError
 
-CORPUS = [
+SHEETS_CORPUS = [
     {
         "source_type": "google_drive",
         "doc_id": "walk-grid",
@@ -44,18 +47,18 @@ CORPUS = [
 ]
 
 
-def run(timeout: float) -> list[tuple[str, Any]]:
-    """Each read as the discovery method it is, with what Backlot answered, as the service account
-    so every spreadsheet answers."""
+def sheets(timeout: float) -> list[tuple[str, Any]]:
+    """Each Sheets read as the discovery method it is, with what Backlot answered, as the service
+    account so every spreadsheet answers."""
     import backlot
 
-    with backlot.serve(CORPUS, telemetry=False) as server:
+    with backlot.serve(SHEETS_CORPUS, telemetry=False) as server:
         headers = {"Authorization": f"Bearer {server.token}"}
         with httpx.Client(base_url=server.base_url, headers=headers, timeout=timeout) as client:
-            return list(_reads(client))
+            return list(_sheets_reads(client))
 
 
-def _reads(client: httpx.Client):
+def _sheets_reads(client: httpx.Client):
     files = _ok(
         client.get(
             "/drive/v3/files",

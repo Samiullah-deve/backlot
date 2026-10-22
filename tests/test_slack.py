@@ -4540,6 +4540,38 @@ def test_a_root_whose_last_reply_goes_is_a_standalone_message_again(wclient, tok
     assert "thread_ts=" not in link
 
 
+#: What each write and write-adjacent method DECLARES it reads. These are the arguments
+#: `backlot mcp --source slack` turns into tool arguments, so an agent can only send what is
+#: here — and a mutation run showed every one of them could be dropped with the suite green.
+_DECLARED = {
+    "chat.postMessage": {"channel", "text", "thread_ts"},
+    "chat.postEphemeral": {"channel", "user", "text"},
+    "chat.update": {"channel", "ts", "text"},
+    "chat.delete": {"channel", "ts"},
+    "chat.getPermalink": {"channel", "message_ts"},
+    "reactions.add": {"channel", "timestamp", "name"},
+    "reactions.remove": {"channel", "timestamp", "name"},
+    "reactions.get": {"channel", "timestamp"},
+    "reactions.list": {"count", "page", "limit", "cursor", "user"},
+}
+
+
+@pytest.mark.parametrize("method", sorted(_DECLARED))
+def test_each_write_method_declares_the_arguments_it_reads(client, method):
+    # Declared, not merely accepted: `_P_*` lists what Backlot actually reads, and the fidelity
+    # baseline acknowledges every documented argument it does not. Dropping one here would take
+    # it out of the MCP tool's signature with nothing else noticing.
+    spec = client.get("/_meta/openapi/slack").json()
+    names = {
+        q["name"]
+        for verb in spec["paths"][f"/slack/api/{method}"].values()
+        if isinstance(verb, dict)
+        for q in verb.get("parameters", [])
+        if q.get("in") == "query"
+    }
+    assert names == _DECLARED[method], method
+
+
 def test_a_permalink_names_the_thread_only_for_a_message_in_one(wclient, tokens):
     # `_permalink` records the measurement. Dropping the `thread_ts` branch left the suite green.
     h = _uh(tokens, "ava@acme.com")

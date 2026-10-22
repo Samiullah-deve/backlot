@@ -1420,6 +1420,24 @@ def document_by_key(conn, source_type: str, key: tuple, visible_ids=None) -> sql
     return conn.execute(sql + clause, [*key, *cparams]).fetchone()
 
 
+def blank_index(conn, source_type: str, key: tuple) -> None:
+    """Index this document as empty text, so no query matches it while it is still served.
+
+    Not the same as dropping its overlay index entry: `_corpus_not_reindexed` excludes a corpus
+    row the overlay has re-indexed, so dropping the entry would put the corpus's own text back in
+    the index. An empty entry keeps the exclusion and matches nothing — which is what real
+    answers for a deleted thread root, for the placeholder's words and for the message's own.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    with overlay.LOCK:
+        _fts_index_overlay(
+            conn, source_type, key, dict.fromkeys(_fts_text_columns(source_type), "")
+        )
+        conn.commit()
+
+
 def _fts_index_overlay(conn, source_type: str, key: tuple, values: dict) -> None:
     """Delete-then-insert one document in the overlay index — an upsert, the same shape
     :func:`fts_add_docs` uses for an append import. Caller holds ``overlay.LOCK`` and commits."""

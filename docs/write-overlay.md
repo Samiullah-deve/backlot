@@ -23,8 +23,11 @@ Reads merge the two. A message posted through `chat.postMessage` appears in
 
 A deleted one goes, unless it is a thread root with replies still under it — real leaves that as
 a placeholder so the thread stays readable, `subtype: "tombstone"` and `hidden: true` over
-`This message was deleted.`, keeping its `thread_ts`, `reply_count`, `reply_users` and
-`latest_reply`. Deleting the last reply takes the placeholder with it.
+`This message was deleted.`, attributed to `USLACKBOT` rather than to the poster and keeping its
+`thread_ts`, `reply_count`, `reply_users` and `latest_reply`. No search finds it, by the
+placeholder's words or by the message's own, and `chat.update` and `chat.delete` answer it
+`message_not_found` where a reaction and a permalink still work. Deleting the last reply takes
+the placeholder with it, and a LIVE root whose last reply goes is a standalone message again.
 
 Two messages posted in one second come back in the order they were posted. Slack's `ts` is a
 second and a six-digit fraction, and real's fractions rise within a second as well as across one,

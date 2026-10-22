@@ -4451,6 +4451,95 @@ def test_a_corpus_message_can_be_deleted_by_its_author(wclient, tokens, ro_conn)
     assert thread["ok"] is True and len(thread["messages"]) > 1
 
 
+def test_a_deleted_thread_root_leaves_the_placeholder_real_leaves(wclient, tokens):
+    # `chat_delete` and `_unthread_a_spent_root` record the measurement. Four things real does
+    # that subtracting the row would not: it is attributed to Slackbot, it is found by no search
+    # (neither the placeholder's words nor the message's own), it can no longer be updated or
+    # deleted, and it still takes a reaction and answers a permalink.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+
+    def post(text, **extra):
+        return wclient.post(
+            "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": text, **extra}
+        ).json()["ts"]
+
+    def history():
+        return {
+            m["ts"]: m
+            for m in wclient.post(
+                "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+            ).json()["messages"]
+        }
+
+    root = post("zarquonroot words")
+    reply = post("a reply", thread_ts=root)
+    wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": root})
+
+    stub = history()[root]
+    assert stub["subtype"] == "tombstone" and stub["hidden"] is True
+    assert stub["user"] == slack.SLACKBOT_ID and stub["parent_user_id"] == slack.SLACKBOT_ID
+    assert stub["text"] == slack.TOMBSTONE_TEXT and "team" not in stub
+    for query in ("deleted", "zarquonroot"):
+        hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": query}).json()[
+            "messages"
+        ]["matches"]
+        assert root not in [m["ts"] for m in hits], query
+    for method in ("chat.update", "chat.delete"):
+        answered = wclient.post(
+            f"/slack/api/{method}",
+            headers=h,
+            data={"channel": cid, "ts": root, "text": "x"},
+        ).json()
+        assert answered == {"ok": False, "error": "message_not_found"}, method
+    assert (
+        wclient.post(
+            "/slack/api/reactions.add",
+            headers=h,
+            data={"channel": cid, "timestamp": root, "name": "eyes"},
+        ).json()["ok"]
+        is True
+    )
+    assert (
+        wclient.post(
+            "/slack/api/chat.getPermalink", headers=h, data={"channel": cid, "message_ts": root}
+        ).json()["ok"]
+        is True
+    )
+
+    # The last reply takes the placeholder with it.
+    wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": reply})
+    assert root not in history()
+
+
+def test_a_root_whose_last_reply_goes_is_a_standalone_message_again(wclient, tokens):
+    # Measured with the placeholder above: real leaves no `thread_ts` on it and its permalink
+    # loses the thread query.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    root = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "live root"}
+    ).json()["ts"]
+    reply = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=h,
+        data={"channel": cid, "text": "only reply", "thread_ts": root},
+    ).json()["ts"]
+    wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": reply})
+    back = [
+        m
+        for m in wclient.post(
+            "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+        ).json()["messages"]
+        if m["ts"] == root
+    ][0]
+    assert "thread_ts" not in back
+    link = wclient.post(
+        "/slack/api/chat.getPermalink", headers=h, data={"channel": cid, "message_ts": root}
+    ).json()["permalink"]
+    assert "thread_ts=" not in link
+
+
 def _a_corpus_message(ro_conn, shape: str) -> tuple[str, str, str]:
     """``(author, channel, ts)`` of a corpus message of this shape. The sample corpus holds one
     threaded channel and two standalone messages, in different channels, so neither row can be

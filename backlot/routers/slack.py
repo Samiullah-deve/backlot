@@ -126,6 +126,8 @@ TEAM_ID = "T0000BKLT"
 SERVICE_EMAIL = "service-account"
 SERVICE_USER_ID = "USERVICE0"
 BOT_ID = "B0000BKLT"
+#: Slackbot, who the placeholder a deleted thread root leaves is attributed to.
+SLACKBOT_ID = "USLACKBOT"
 #: What real leaves in place of a deleted thread root (measured, see `chat_delete`).
 TOMBSTONE_TEXT = "This message was deleted."
 _P_HISTORY = [
@@ -2166,7 +2168,10 @@ def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal:
         return None, None, None, err
     ts = _param(request, ts_param) or ""
     row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
-    if row is None:
+    if row is None or row["subtype"] == "tombstone":
+        # The placeholder a deleted root leaves is served but is no longer a message anyone can
+        # address: measured 2026-10-22, `chat.update` and `chat.delete` on it answer
+        # `message_not_found`, where reacting to it and asking its permalink still answer.
         return None, None, None, _err("message_not_found")
     author, _uid_, _bot = _writer(caller)
     # Case-folded, the way `_subscribed` compares the same addresses: a corpus states an author's
@@ -2270,23 +2275,33 @@ async def chat_delete(request: Request):
     if _row["thread_seq"] == 0 and store.slack_reply_count(conn, name, ts, ids) > 0:
         store.patch_document(conn, "slack", (name, ts), "content", TOMBSTONE_TEXT)
         store.patch_document(conn, "slack", (name, ts), "subtype", "tombstone")
+        # Served, but found by nothing: real answers no search hit for the placeholder's words
+        # or for the message's own.
+        store.blank_index(conn, "slack", (name, ts))
     else:
         store.tombstone_document(conn, "slack", (name, ts))
-        _drop_a_spent_tombstone(conn, name, _row, ids)
+        _unthread_a_spent_root(conn, name, _row, ids)
     _invalidate(request, name)
     return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
 
 
-def _drop_a_spent_tombstone(conn, channel: str, deleted, ids) -> None:
-    """Subtract the placeholder a deleted root left, once ``deleted`` was its last reply."""
+def _unthread_a_spent_root(conn, channel: str, deleted, ids) -> None:
+    """What a thread's root becomes once ``deleted`` was its last reply.
+
+    Measured against slack.com on 2026-10-22: a placeholder goes with the last reply under it,
+    and a live root goes back to being a standalone message — no `thread_ts` on it in history,
+    and `chat.getPermalink` answers it without the thread query.
+    """
     root_ts = deleted["thread_ts"]
     if not root_ts or deleted["thread_seq"] == 0:
         return
     root = store.document_by_key(conn, "slack", (channel, root_ts))
-    if root is None or root["subtype"] != "tombstone":
+    if root is None or store.slack_reply_count(conn, channel, root_ts, ids) > 0:
         return
-    if store.slack_reply_count(conn, channel, root_ts, ids) == 0:
+    if root["subtype"] == "tombstone":
         store.tombstone_document(conn, "slack", (channel, root_ts))
+    else:
+        store.patch_document(conn, "slack", (channel, root_ts), "thread_ts", None)
 
 
 @router.api_route(
@@ -2858,10 +2873,14 @@ def _message(
     if row["subtype"]:
         m["subtype"] = row["subtype"]
     if row["subtype"] == "tombstone":
-        # The placeholder a deleted root leaves carries neither the poster's `team` nor anything
-        # the message said, and a client hides it from the channel on `hidden`.
+        # The placeholder a deleted root leaves is not attributed to the poster: measured
+        # 2026-10-22, real answers `user` and `parent_user_id` as `USLACKBOT`, carries `hidden`,
+        # and carries none of the author's own fields.
         m["hidden"] = True
+        m["user"] = SLACKBOT_ID
+        m["parent_user_id"] = SLACKBOT_ID
         m.pop("team", None)
+        m.pop("bot_id", None)
     if row["thread_ts"]:  # part of a thread
         m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root

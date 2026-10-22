@@ -9,6 +9,13 @@ pip install -e ".[official-sdk]"
 python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py, fireflies.py
 ```
 
+`slack.py` also **writes**: it posts, searches for what it posted, reacts, edits and deletes,
+and reads `/_meta/overlay` to show what the server recorded. Slack is the only source with a
+write surface so far; the rest read. Writes never reach the corpus file — they land in an
+in-memory overlay that dies with the server, which is what lets one evaluation run start where
+the last one did. `--read-only` skips that half, and [docs/overlay.md](../../docs/overlay.md)
+covers how the overlay is read back and reset.
+
 ## Fireflies has no SDK — and raw HTTP is the official path
 
 `fireflies.py` uses `httpx` directly, and that is not a workaround for a missing client.

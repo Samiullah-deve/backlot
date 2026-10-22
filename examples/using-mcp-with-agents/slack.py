@@ -7,6 +7,12 @@ No maintained Slack MCP server accepts a base-URL override (they hard-wire slack
 `Bearer <token>` header — so retrieval is ACL-scoped by `--user` (default: the admin; any email
 from GET /_meta/users).
 
+The bridge serves the WRITE methods too, so the agent is given a task it has to act to finish
+rather than a question it can only answer: it finds the incident, replies in the thread and
+reacts. What it did is then read back from `/_meta/overlay` — the record an evaluation grades,
+and the reason the writes land in an overlay instead of the corpus (see docs/overlay.md).
+`--read-only` asks the retrieval question instead.
+
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
     ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py [--url … --user … --agent openai]
@@ -15,7 +21,9 @@ Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import urllib.request
 
 from _agent import run_agent
 from mcp import StdioServerParameters
@@ -35,12 +43,17 @@ CORPUS = [
         "created": "2026-02-10T18:00:00Z",
         "source_type": "slack",
         "channel": "runbooks",
-        "content": "on-call: latency spike after a deploy → check dashboards, roll back, page on-call.",
+        "content": "on-call runbook — latency spike after a deploy: check dashboards, roll back, page on-call.",
     },
 ]
 QUESTION = (
     "Search Slack for the checkout latency incident and summarize it, then find the on-call "
     "runbook message. Cite the channels."
+)
+TASK = (
+    "Search Slack for the checkout latency incident. Reply in that message's thread with a "
+    "one-line summary and the next step from the on-call runbook, and add an :eyes: reaction to "
+    "the incident message itself."
 )
 
 
@@ -75,7 +88,35 @@ def _parse_args() -> argparse.Namespace:
         default="anthropic",
         help="which LLM agent to run (default: anthropic)",
     )
+    p.add_argument(
+        "--read-only",
+        action="store_true",
+        help="ask the retrieval question instead of giving the agent a task to act on",
+    )
     return p.parse_args()
+
+
+def report_writes(base_url: str) -> None:
+    """What the agent actually did, read back the way an evaluation's grader reads it.
+
+    `/_meta/overlay` holds exactly the writes since the last reset, so grading needs no snapshot
+    of the surface from before the run -- the overlay already is the difference.
+    """
+    with urllib.request.urlopen(f"{base_url}/_meta/overlay") as response:
+        overlay = json.load(response)
+    print("\n--- what the agent wrote, from /_meta/overlay ---")
+    wrote = False
+    for message in overlay.get("slack_messages") or ():
+        wrote = True
+        print(f"  message in #{message['channel']} at {message['ts']}: {message['content']!r}")
+    for patch in overlay.get("slack_patch") or ():
+        wrote = True
+        print(f"  {patch['field']} on #{patch['channel']} {patch['ts']}: {patch['value']!r}")
+    for stone in overlay.get("slack_tombstone") or ():
+        wrote = True
+        print(f"  deleted #{stone['channel']} {stone['ts']}")
+    if not wrote:
+        print("  nothing — the agent answered without acting")
 
 
 if __name__ == "__main__":
@@ -84,4 +125,6 @@ if __name__ == "__main__":
         if args.user:
             print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
         params = build_params(s.base_url, args.user)
-        run_agent(args.agent, params, QUESTION)
+        run_agent(args.agent, params, QUESTION if args.read_only else TASK)
+        if not args.read_only:
+            report_writes(s.base_url)

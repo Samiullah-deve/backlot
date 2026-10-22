@@ -1455,11 +1455,17 @@ def resolve_viewer(_root, info) -> dict:
 # A team's members are the people in its ACL group: the group its issues are granted to, which a
 # roster's department or `groups:` entry fills. Measured against api.linear.app on 2026-10-20 and
 # 2026-10-22: a member is answered a `TeamMembership` with `owner: false`, `archivedAt: null` and
-# `createdAt == updatedAt`, and the same membership by id from `teamMembership(id:)`; a team the
-# viewer is not in answers `viewerMembership: null`, `viewerCanJoin: true`, `viewerCanLeave:
-# false` and lists neither the viewer in `members` nor its old membership by id ("Entity not
-# found: TeamMembership", a message that carries no id). Being assigned one of a team's issues
-# made the assignee no member of it.
+# `createdAt == updatedAt`, and the same membership by id from `teamMembership(id:)`, another
+# member's included; a team the viewer is not in answers `viewerMembership: null`,
+# `viewerCanJoin: true`, `viewerCanLeave: false` and lists neither the viewer in `members` nor its
+# old membership by id ("Entity not found: TeamMembership", a message that carries no id). Being
+# assigned one of a team's issues made the assignee no member of it. `Team.memberships`,
+# `User.teamMemberships` and `Query.teamMemberships` listed the same memberships newest first, and
+# an app user in no team answered empty `teamMemberships` and `teams`.
+
+# The shape of a UUID, any version. `Team.membership(userId:)` answered null for an unknown one and
+# "Internal server error" for anything else (measured 2026-10-22).
+_ANY_UUID = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 
 
 def _team_groups(info) -> dict[str, str | None]:
@@ -1472,47 +1478,71 @@ def _team_groups(info) -> dict[str, str | None]:
     return groups
 
 
-def _member_teams(info) -> list[str]:
-    """The teams the caller sees and is a member of, in the order ``teams`` lists them. The
-    admin token is no person, so it is in none."""
+def _team_member_rows(container: str, info) -> list:
+    """The principal rows of a team's members, read once per team per request."""
     ctx = _ctx(info)
-    teams = ctx.get("_member_teams")
-    if teams is None:
-        email = ctx.get("caller_email")
-        mine = set(store.user_group_ids(ctx["conn"], email)) if email else set()
+    cache = ctx.setdefault("_team_member_rows", {})
+    if container not in cache:
+        group = _team_groups(info).get(container)
+        cache[container] = store.group_members(ctx["conn"], group) if group else []
+    return cache[container]
+
+
+def _user_teams(email: str | None, info) -> list[str]:
+    """The teams the caller sees that ``email`` is a member of, in the order ``teams`` lists
+    them."""
+    if not email:
+        return []
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_user_teams", {})
+    if email not in cache:
+        mine = set(store.user_group_ids(ctx["conn"], email))
         groups = _team_groups(info)
-        teams = [t for t in _visible_teams(info) if groups.get(t) in mine]
-        ctx["_member_teams"] = teams
-    return teams
+        cache[email] = [t for t in _visible_teams(info) if groups.get(t) in mine]
+    return cache[email]
 
 
-def _membership(container: str, info) -> dict:
-    """The caller's ``TeamMembership`` in one team.
+def _member_teams(info) -> list[str]:
+    """The caller's teams. The admin token is no person, so it is in none."""
+    return _user_teams(_ctx(info).get("caller_email"), info)
+
+
+def _membership(container: str, user: dict, info) -> dict:
+    """``user``'s ``TeamMembership`` in one team.
 
     A membership cannot predate its team or its user, so it is created at the later of the two, the
     earliest it can be: one member's was created with both in the same instant, another's 64 seconds
     after its user. Linear describes ``sortOrder`` as "The sort order of this team in the user's
-    personal team list", so a team's is its position in the caller's list of teams; the two
+    personal team list", so a team's is its position in the user's list of teams; the two
     memberships measured answered 41 and 0."""
-    viewer = resolve_viewer(None, info)
     team = _team(container, info)
-    created = max(team["createdAt"], viewer["createdAt"])
+    created = max(team["createdAt"], user["createdAt"])
     return {
-        "id": synth.linear_team_membership_id(container, viewer["id"]),
+        "id": synth.linear_team_membership_id(container, user["id"]),
         "createdAt": created,
         "updatedAt": created,
         "archivedAt": None,
         "owner": False,
-        "sortOrder": float(_member_teams(info).index(container)),
-        "user": viewer,
+        "sortOrder": float(_user_teams(user["email"], info).index(container)),
+        "user": user,
         "team": team,
     }
+
+
+def _team_memberships(container: str, info) -> list[dict]:
+    rows = _team_member_rows(container, info)
+    return [_membership(container, _user(r["email"], r["display_name"], info), info) for r in rows]
+
+
+def _memberships_page(memberships: list[dict], first, after, last, before) -> dict:
+    nodes = _newest_first(memberships, lambda m: (m["createdAt"], m["id"]))
+    return _list_page(nodes, first, after, last, before)
 
 
 def resolve_team_viewer_membership(team, info) -> dict | None:
     if team["_container"] not in _member_teams(info):
         return None
-    return _membership(team["_container"], info)
+    return _membership(team["_container"], resolve_viewer(None, info), info)
 
 
 def resolve_team_viewer_can_join(team, info) -> bool:
@@ -1530,11 +1560,64 @@ def resolve_team_viewer_can_leave(team, info) -> bool:
 
 
 def resolve_team_membership(_root, info, id) -> dict:
-    viewer_id = resolve_viewer(None, info)["id"]
-    for container in _member_teams(info):
-        if synth.linear_team_membership_id(container, viewer_id) == str(id):
-            return _membership(container, info)
+    """Anyone's membership in a team the caller sees. Each candidate's id is hashed before any
+    membership is built, so a lookup costs one hash per member."""
+    for container in _visible_teams(info):
+        for row in _team_member_rows(container, info):
+            user_id = synth.linear_user_id(row["email"])
+            if synth.linear_team_membership_id(container, user_id) == str(id):
+                user = _user(row["email"], row["display_name"], info)
+                return _membership(container, user, info)
     raise GraphQLError("Entity not found: TeamMembership")
+
+
+def resolve_team_membership_of(team, info, userId) -> dict | None:
+    """``Team.membership(userId:)``: null for someone who is not a member."""
+    if not _ANY_UUID.match(str(userId)):
+        raise GraphQLError(
+            "Internal server error",
+            extensions={
+                "code": "INTERNAL_SERVER_ERROR",
+                "type": "internal error",
+                "userError": False,
+            },
+        )
+    container = team["_container"]
+    for row in _team_member_rows(container, info):
+        if synth.linear_user_id(row["email"]) == str(userId):
+            return _membership(container, _user(row["email"], row["display_name"], info), info)
+    return None
+
+
+def resolve_team_memberships(
+    team, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    return _memberships_page(
+        _team_memberships(team["_container"], info), first, after, last, before
+    )
+
+
+def resolve_team_memberships_root(
+    _root, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    """``Query.teamMemberships``: every membership in the teams the caller sees."""
+    memberships = [m for t in _visible_teams(info) for m in _team_memberships(t, info)]
+    return _memberships_page(memberships, first, after, last, before)
+
+
+def resolve_user_team_memberships(
+    user, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    memberships = [_membership(t, user, info) for t in _user_teams(user["email"], info)]
+    return _memberships_page(memberships, first, after, last, before)
+
+
+def resolve_user_teams(
+    user, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
+    """A user's teams, in the order ``teams`` lists them."""
+    teams = [t for t in _user_teams(user["email"], info) if _match_team(t, filter, info)]
+    return _list_page([_team(t, info) for t in teams], first, after, last, before)
 
 
 def resolve_team_members(
@@ -1549,8 +1632,7 @@ def resolve_team_members(
     sort=None,
     **_ignored,
 ) -> dict:
-    group = _team_groups(info).get(team["_container"])
-    rows = store.group_members(_ctx(info)["conn"], group) if group else []
+    rows = _team_member_rows(team["_container"], info)
     return _user_page(rows, info, first, after, last, before, filter, orderBy, sort)
 
 
@@ -1864,6 +1946,7 @@ RESOLVERS = {
         "attachment": resolve_attachment,
         "issueRelation": resolve_issue_relation,
         "teamMembership": resolve_team_membership,
+        "teamMemberships": resolve_team_memberships_root,
     },
     "Team": {
         "issues": resolve_team_issues,
@@ -1872,6 +1955,8 @@ RESOLVERS = {
         "viewerCanJoin": resolve_team_viewer_can_join,
         "viewerCanLeave": resolve_team_viewer_can_leave,
         "members": resolve_team_members,
+        "membership": resolve_team_membership_of,
+        "memberships": resolve_team_memberships,
         "states": resolve_team_states,
         "labels": resolve_team_labels,
         "projects": resolve_team_projects,
@@ -1886,6 +1971,10 @@ RESOLVERS = {
         "inverseRelations": resolve_issue_inverse_relations,
         "attachments": resolve_issue_attachments,
         "releases": resolve_issue_releases,
+    },
+    "User": {
+        "teamMemberships": resolve_user_team_memberships,
+        "teams": resolve_user_teams,
     },
     "IssueRelation": {
         "issue": resolve_relation_issue,

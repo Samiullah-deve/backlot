@@ -3999,6 +3999,7 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
         "source_type": "linear",
         "doc_id": "lin-sealed",
         "team": "blackops",
+        "group": "people",
         "title": "Sealed",
         "content": "Sealed.",
         "author_email": "hana@acme.com",
@@ -4028,7 +4029,7 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
         }
     }
     records = [*LINEAR_CORPUS, sealed, design]
-    with corpus_client(tmp_path, records, roster=roster) as (client, _settings):
+    with corpus_client(tmp_path, records, roster=roster) as (client, settings):
         users = client.get("/_meta/users").json()["users"]
         h = {"Authorization": next(u["token"] for u in users if u["email"] == "ava@acme.com")}
         q = (
@@ -4068,6 +4069,45 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
                 client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h
             )
             assert by_id.json()["data"]["teamMembership"] == m
+        # Everyone's memberships, by team, by user and in all, newest first, each found by id;
+        # hana's in blackops stays out of sight with its team.
+        q = (
+            "{ teams { nodes { key memberships { nodes { %s } } } }"
+            " teamMemberships { nodes { %s } }"
+            " users { nodes { email teamMemberships { nodes { id } } teams { nodes { key } } } } }"
+        ) % (_MEMBERSHIP, _MEMBERSHIP)
+        d = gql(client, q, h).json()["data"]
+        by_team = {t["key"]: t["memberships"]["nodes"] for t in d["teams"]["nodes"]}
+        everyone = [m for ms in by_team.values() for m in ms]
+        assert len(everyone) == len(members["ENG"]) + len(members["DES"])
+        for ms in [*by_team.values(), d["teamMemberships"]["nodes"]]:
+            order = [(m["createdAt"], m["id"]) for m in ms]
+            assert order == sorted(order, reverse=True)
+        assert sorted(m["id"] for m in d["teamMemberships"]["nodes"]) == sorted(
+            m["id"] for m in everyone
+        )
+        for m in everyone:
+            q = "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP)
+            assert gql(client, q, h).json()["data"]["teamMembership"] == m
+        users = {u["email"]: u for u in d["users"]["nodes"]}
+        assert [t["key"] for t in users["ava@acme.com"]["teams"]["nodes"]] == mine
+        assert users["hana@acme.com"]["teams"]["nodes"] == []
+        admin = {"Authorization": settings.admin_token}
+        q = '{ users(filter: {email: {eq: "hana@acme.com"}}) { nodes { teams { nodes { key } } } } }'
+        (hana,) = gql(client, q, admin).json()["data"]["users"]["nodes"]
+        assert hana["teams"]["nodes"] == [{"key": "BLA"}]
+        assert {m["id"] for m in users["ava@acme.com"]["teamMemberships"]["nodes"]} == {
+            teams[k]["viewerMembership"]["id"] for k in mine
+        }
+        q = '{ team(id: "ENG") { membership(userId: %s) { id user { email } } } }'
+        for email, member in (("bo@acme.com", True), ("mia@acme.com", False)):
+            got = gql(client, q % lit(synth.linear_user_id(email)), h).json()["data"]
+            assert (got["team"]["membership"] or {}).get("user") == (
+                {"email": email} if member else None
+            )
+        refused = gql(client, q % lit("bo@acme.com"), h).json()
+        assert refused["data"] == {"team": {"membership": None}}
+        assert refused["errors"][0]["message"] == "Internal server error"
         # A lone surrogate is answered as any other unknown id; the raw body carries it as JSON's
         # `\ud800` escape, which a client encoding the string as UTF-8 first cannot send.
         for x in (synth.linear_id("nope"), "a\ud800b"):

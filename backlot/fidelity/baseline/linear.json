@@ -6734,10 +6734,27 @@
           }
         },
         "teamMemberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "teams": {
           "status": "implemented",
@@ -7908,16 +7925,35 @@
           }
         },
         "membership": {
-          "status": "missing",
-          "type": "TeamMembership",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "userId": {
+              "status": "implemented"
+            }
+          }
         },
         "memberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "mergeWorkflowState": {
           "status": "implemented"
@@ -8292,6 +8328,24 @@
           "status": "implemented"
         },
         "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "TeamMembershipConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[TeamMembershipEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
           "status": "implemented"
         }
       }
@@ -8678,16 +8732,53 @@
           }
         },
         "teamMemberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "teams": {
-          "status": "missing",
-          "type": "TeamConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "timezone": {
           "status": "implemented"

@@ -88,6 +88,7 @@ type Query {
   issueRelation(id: String!): IssueRelation!
   release(id: String!): Release!
   teamMembership(id: String!): TeamMembership!
+  teamMemberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
 }
 
 # --- connections & entity types -----------------------------------------------------
@@ -1123,6 +1124,8 @@ type Team {
   issues(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter, includeSubTeams: Boolean): IssueConnection!
   """The people in the team's ACL group."""
   members(after: String, before: String, filter: UserFilter, first: Int, includeArchived: Boolean, includeDisabled: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [UserSortInput!]): UserConnection!
+  membership(userId: String!): TeamMembership
+  memberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
   """Linear's six default states, and every other state the team's issues are in."""
   states(after: String, before: String, filter: WorkflowStateFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): WorkflowStateConnection!
   """Every label the caller sees an issue carrying: labels are workspace-wide (`team: null`), and
@@ -1134,8 +1137,7 @@ type Team {
   cycles(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): CycleConnection!
 }
 
-# A team's members are the people in its ACL group, and the viewer's membership is served in the
-# teams it is one of; `Team.membership`, `memberships` and `User.teamMemberships` are gaps.
+# A team's members are the people in its ACL group, each with a membership in it.
 type TeamMembership {
   id: ID!
   createdAt: DateTime!
@@ -1149,6 +1151,11 @@ type TeamMembership {
 
 type TeamConnection {
   nodes: [Team!]!
+  pageInfo: PageInfo!
+}
+
+type TeamMembershipConnection {
+  nodes: [TeamMembership!]!
   pageInfo: PageInfo!
 }
 
@@ -1224,6 +1231,8 @@ type User {
   canAccessAnyPublicTeam: Boolean!
   calendarHash: String
   inviteHash: String!
+  teamMemberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
+  teams(after: String, before: String, filter: TeamFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamConnection!
 }
 
 type UserConnection {

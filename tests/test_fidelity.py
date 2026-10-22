@@ -544,7 +544,8 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
     monkeypatch.setattr(google_discovery_diff, "fetch_json", fake_fetch)
 
     def walk(timeout):
-        return [("gmail.users.getProfile", {"emailAddress": "a@b", "labels": [{"id": "1"}]})]
+        profile = {"emailAddress": "a@b", "labels": [{"id": "1"}], "nickname": "a"}
+        return [("gmail.users.getProfile", profile)]
 
     c = comparisons.GoogleDiscoveryComparison(
         name="gmail",
@@ -561,6 +562,7 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
         ("missing_batch_path", "gmail:v1 batch"),
     ]
     assert [(f.kind, f.path) for f in found if "field" in f.kind] == [
+        ("extra_field", "gmail.Profile.nickname"),
         ("missing_field", "gmail.Label.name"),
         ("missing_field", "gmail.Profile.byKey"),
         ("missing_field", "gmail.Profile.history"),
@@ -569,6 +571,7 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
     profile = next(e for e in written["operations"] if e.get("id") == "gmail.users.getProfile")
     assert profile["response"] == "gmail.Profile"
     assert "root" not in written
+    assert written["types"]["gmail.Profile"]["status"] == "implemented"
     assert written["types"]["gmail.Profile"]["fields"] == {
         "byKey": {
             "status": "missing",
@@ -584,6 +587,12 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
             "severity": "gap",
         },
         "labels": {"status": "implemented", "type": "[gmail.Label]"},
+        "nickname": {
+            "status": "extra",
+            "kind": "extra_field",
+            "severity": "breaking",
+            "detail": "Backlot serves it, and the vendor's message declares no such field",
+        },
     }
     assert written["types"]["gmail.History"] == {
         "type_kind": "object",

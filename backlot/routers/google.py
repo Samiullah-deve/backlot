@@ -3820,14 +3820,21 @@ def _sheets_types() -> dict[str, dict[str, str | None]]:
 _SHEETS_FIELDS = _sheets_types()
 
 
-def _gmask_paths(mask: str) -> list[tuple[str, ...]]:
-    """The paths a ``fields`` mask names, in its order, each as its names.
+def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
+    """The paths a ``fields`` mask names, in its order, each as its names, and the bracket it leaves
+    unpaired (``""`` for none).
 
     Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
     separates siblings and a trailing comma is tolerated. A name is matched case-sensitively and is
     not trimmed -- `` spreadsheetId`` with a leading space 400s. An empty group names nothing, not
     even the name before it: measured 2026-10-22, `a()` answered the whole spreadsheet with no
-    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone."""
+    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
+
+    A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
+    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22 over 25 masks, `a)` and
+    `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
+    `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
+    `(` one."""
     paths: list[tuple[str, ...]] = []
     # the prefix of each open group
     stack: list[tuple[str, ...]] = []
@@ -3843,10 +3850,10 @@ def _gmask_paths(mask: str) -> list[tuple[str, ...]]:
             prefix += names(token) if token else ()
             token = ""
         elif ch == ")":
-            if not stack:
-                raise gerr.bad_field_mask(mask, mask)
             if token:
                 paths.append(prefix + names(token))
+            if not stack:
+                return paths, ")"
             prefix, token = stack.pop(), ""
         elif ch == ",":
             if token:
@@ -3854,24 +3861,21 @@ def _gmask_paths(mask: str) -> list[tuple[str, ...]]:
             token = ""
         else:
             token += ch
-    if stack:
-        raise gerr.bad_field_mask(mask, mask)
     if token:
         paths.append(prefix + names(token))
-    return paths
+    return paths, "(" if stack else ""
 
 
 def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
     """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
-    when it names nothing there.
+    when it names nothing there; ``{}`` is all of it.
 
     A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is
     `sheets.properties.title`, `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the
     row count is three names under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a
     path selects all of what it is under, a field holding no message included, and so does a run
     of them: `spreadsheetId.*`, `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered,
-    where `spreadsheetId.*.x` names nothing. One ending a path is kept as the ``"*"`` key, which
-    `_gmask_tree` reads."""
+    where `spreadsheetId.*.x` names nothing."""
     if not path:
         return {}
     head, rest = path[0], path[1:]
@@ -3880,7 +3884,7 @@ def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
     fields = _SHEETS_FIELDS[message]
     if head == "*":
         if not rest:
-            return {"*": {}}
+            return {}
         out = {}
         for name, held in fields.items():
             sub = _gmask_resolve(rest, held)
@@ -3894,17 +3898,11 @@ def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
 
 
 def _gmask_merge(into: dict, selection: dict) -> None:
+    """Merge one path's selection into the tree, a narrower selection replacing a wider one:
+    measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone, and
+    `sheets,sheets.properties.title` and `sheets.*,sheets.properties.title` the title alone."""
     for name, sub in selection.items():
         _gmask_merge(into.setdefault(name, {}), sub)
-
-
-def _gmask_tree(node: dict) -> dict:
-    """``node`` with each ``*`` read: one beside another name is dropped, and one alone is all of
-    the message it is under. Measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone
-    and `sheets.*,sheets.properties.title` the title alone, where `sheets.*` is every sheet whole.
-    A wider selection is narrowed the same way: `sheets,sheets.properties.title` answered the
-    title alone, which is what merging the two paths into one tree gives."""
-    return {name: _gmask_tree(sub) for name, sub in node.items() if name != "*"}
 
 
 def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
@@ -3918,7 +3916,7 @@ def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
     holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
     Checked against the whole schema, not against what this module builds: measured 2026-10-22,
     `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
-    answered 200 on a spreadsheet holding none.
+    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after them.
 
     A comment field is one a path reaches by naming something: measured 2026-10-22, `comments`,
     `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments that
@@ -3928,13 +3926,16 @@ def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
         return None, False
     tree: dict = {}
     comments = False
-    for path in _gmask_paths(mask):
+    paths, unpaired = _gmask_paths(mask)
+    for path in paths:
         selection = _gmask_resolve(path, message)
         if selection is None:
             raise gerr.bad_field_mask(mask, ".".join(path))
         comments |= "comments" in selection and any(name != "*" for name in path)
         _gmask_merge(tree, selection)
-    return (_gmask_tree(tree) or None), comments
+    if unpaired:
+        raise gerr.unbalanced_field_mask(mask, unpaired)
+    return (tree or None), comments
 
 
 def _gmask_wants_grid(tree: dict | None, include_grid_data: bool) -> bool:
@@ -5555,24 +5556,24 @@ def _drive_mime(row) -> str:
 
 def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
     """A stored file's `capabilities`, for its owner or for anyone else, whom every grant here makes
-    a reader. Measured 2026-10-22 on a spreadsheet and a plain-text file, each read by its owner
-    and by a user it was shared with as a reader: the owner may comment, edit, rename, trash,
-    delete, read revisions and modify content, and the reader may do none of those; both may
-    download and copy, and only the owner may share. A folder grants no write here: unmeasured."""
-    writes = owned and not is_folder
+    a reader. Measured 2026-10-22 on a spreadsheet, a plain-text file and a folder, each read by its
+    owner and by a user it was shared with as a reader: the owner may comment, edit, rename, trash,
+    delete, share and modify content, and the reader may do none of those; both may download. A
+    file can be copied and its owner may read its revisions; a folder lists its children to both
+    and takes new ones from its owner."""
     return {
         "canDownload": True,
         "canListChildren": is_folder,
-        "canComment": writes,
-        "canEdit": writes,
+        "canComment": owned,
+        "canEdit": owned,
         "canCopy": not is_folder,
         "canShare": owned,
-        "canRename": writes,
-        "canTrash": writes,
-        "canDelete": writes,
-        "canReadRevisions": writes,
-        "canAddChildren": is_folder,
-        "canModifyContent": writes,
+        "canRename": owned,
+        "canTrash": owned,
+        "canDelete": owned,
+        "canReadRevisions": owned and not is_folder,
+        "canAddChildren": owned and is_folder,
+        "canModifyContent": owned,
     }
 
 

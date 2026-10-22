@@ -4742,26 +4742,58 @@ def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
     assert [f["name"] for f in r.json()["files"]] == listed.split()
 
 
+# Each set of `capabilities` true for a file or a folder, as its owner and as a reader read it
+# (`_drive_file_capabilities`); every other one is false.
+_CAPS_TRUE = {
+    ("file", True): {
+        "canDownload",
+        "canComment",
+        "canEdit",
+        "canCopy",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canReadRevisions",
+        "canModifyContent",
+    },
+    ("file", False): {"canDownload", "canCopy"},
+    ("folder", True): {
+        "canDownload",
+        "canListChildren",
+        "canComment",
+        "canEdit",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canAddChildren",
+        "canModifyContent",
+    },
+    ("folder", False): {"canDownload", "canListChildren"},
+}
+
+
 @pytest.mark.parametrize(
-    "name, owned, writes",
+    "name, owned, kind",
     [
-        ("Mine", True, True),
-        ("Theirs", False, False),
-        ("Plans", False, False),
-        ("Figures", True, False),
-        ("Drafts", False, False),
+        ("Mine", True, "file"),
+        ("Theirs", False, "file"),
+        ("Plans", False, "folder"),
+        ("Figures", True, "folder"),
+        ("Drafts", False, "folder"),
     ],
 )
 def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
-    tmp_path, name, owned, writes
+    tmp_path, name, owned, kind
 ):
     """`ownedByMe` is per caller, and `canShare` and `modifiedByMe` with it: what the caller owns it
     can share, and what it can only read it cannot; `_modified_by_me` says why the caller modified
     exactly what it owns. Real answered `canShare: true` on 117 of the 118 items a Google Workspace
     member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on each
     folder and each file shared with it to read. `Plans` is a folder a record's `folder` names, and
-    `Figures` and `Drafts` are `subtype: folder` records. ``writes`` is what
-    `_drive_file_capabilities` lets the owner of a file do and its reader not."""
+    `Figures` and `Drafts` are `subtype: folder` records. The rest of `capabilities` is
+    `_CAPS_TRUE`'s."""
     record = {
         "source_type": "google_drive",
         "folder": "Plans",
@@ -4801,19 +4833,10 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
     for f in (listed, got):
         assert (f["ownedByMe"], f["capabilities"]["canShare"], f["modifiedByMe"]) == (owned,) * 3
         assert f.get("modifiedByMeTime") == (f["modifiedTime"] if owned else None)
-        assert {f["capabilities"][k] for k in _WRITES} == {writes}
+        assert {k for k, v in f["capabilities"].items() if v} == _CAPS_TRUE[kind, owned]
 
 
 _PER_CALLER = "ownedByMe,capabilities,modifiedByMe,modifiedByMeTime,modifiedTime"
-_WRITES = (
-    "canComment",
-    "canEdit",
-    "canRename",
-    "canTrash",
-    "canDelete",
-    "canReadRevisions",
-    "canModifyContent",
-)
 
 
 def test_drive_order_by_sorts_the_result(client, admin_h):
@@ -9803,6 +9826,8 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
         ("range,", {"range": "Summary!A1:B2"}),
         # a run of `*` under a field holding no message is all of it
         ("range.*.*", {"range": "Summary!A1:B2"}),
+        # `*` beside a name is dropped
+        ("range,*", {"range": "Summary!A1:B2"}),
         ("*", None),
     ],
 )
@@ -9837,6 +9862,8 @@ _BOOK_KEYS = ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
         ("commentsViewMode", ["commentsViewMode"]),
         # `*` alone is no mask, and beside a name is dropped
         ("*", _BOOK_KEYS),
+        ("(*)", _BOOK_KEYS),
+        (",", _BOOK_KEYS),
         ("spreadsheetId,*", ["spreadsheetId"]),
         ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
         ("*.title", ["properties"]),
@@ -9962,6 +9989,15 @@ def test_fields_reaches_through_the_sheets_list(gc, gh, book):
         ("{book}", "spreadsheetId.*.x", "spreadsheetId.*.x", "spreadsheetId.*.x"),
         ("{book}/values/Summary!A1", "values.foo", "values.foo", "values.foo"),
         ("{book}/values:batchGet?ranges=A1", "valueRanges.values.x", None, "valueRanges.values.x"),
+        # a path ahead of an unpaired bracket is read first
+        ("{book}", "a)", None, "a"),
+        ("{book}", "bogus)spreadsheetId", None, "bogus"),
+        (
+            "{book}",
+            "sheets(properties/title,bogus",
+            "sheets(properties.title,bogus",
+            "sheets.bogus",
+        ),
     ],
 )
 def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, url, mask, field, path):
@@ -9987,6 +10023,37 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, url, mask, field
                     ),
                 }
             ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "mask, unpaired",
+    [
+        ("(", "("),
+        ("sheets(", "("),
+        ("sheets(properties/title", "("),
+        ("sheets(properties(title)", "("),
+        ("spreadsheetId,(", "("),
+        ("sheets()(", "("),
+        (")", ")"),
+        ("spreadsheetId)", ")"),
+        ("spreadsheetId)bogus", ")"),
+        ("sheets(properties))", ")"),
+    ],
+)
+def test_a_fields_mask_with_an_unpaired_bracket_is_refused(gc, gh, book, mask, unpaired):
+    """`gerr.unbalanced_field_mask`, reached once the paths before the bracket name something."""
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    assert r.status_code == 400
+    pair = ")" if unpaired == "(" else "("
+    dotted = mask.replace("/", ".")
+    assert r.json()["error"]["details"][0]["fieldViolations"] == [
+        {
+            "field": dotted,
+            "description": (
+                f"Invalid FieldMask '{dotted}'. Cannot find matching '{pair}' for all '{unpaired}'."
+            ),
         }
     ]
 
@@ -10936,6 +11003,7 @@ def dana(grid_settings):
         ("getByDataFilter", "1", "commentsViewMode", False, 200, _OMITTED),
         # a number the enum does not declare is taken, and answered as no comments
         ("getByDataFilter", 4, "commentsViewMode", False, 200, _OMITTED),
+        ("getByDataFilter", 4, "commentsViewMode", True, 200, _OMITTED),
         ("getByDataFilter", 4, "comments", False, 200, None),
         ("getByDataFilter", -1, "comments", True, 200, None),
     ],

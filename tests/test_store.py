@@ -2818,11 +2818,10 @@ def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
     # from, so it must equal `bm25()` exactly. Pointed at `ov` it does the one thing that differs:
     # the row comes from the overlay, the statistics still from the corpus.
     #
-    # "the" is in the list on purpose — a term in almost every document drives IDF non-positive,
-    # which fts5 clamps rather than letting it go negative. Without a clamping case the parametrize
-    # would pass against a scorer that omits the clamp entirely. "the the" is there because fts5
-    # sums bm25 per PHRASE, so a repeated term counts twice; a scorer that de-duplicates the query
-    # into a set would diverge only here.
+    # "the the" is there because fts5 sums bm25 per PHRASE, so a repeated term counts twice; a
+    # scorer that de-duplicates the query into a set would diverge only here. The CLAMP is not
+    # reachable in this corpus — it needs a term in at least half the index's rows, and the
+    # sample's commonest is in two of five — so it has a corpus of its own below.
     rows = ov_db.execute(
         "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
         "WHERE slack_fts MATCH ? LIMIT 5",
@@ -2833,6 +2832,44 @@ def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
     for row in rows:
         mine = store._corpus_bm25(ov_db, "slack", terms, row["rid"], schema="main")
         assert mine == pytest.approx(row["r"], rel=1e-9), f"{terms!r} rowid={row['rid']}"
+
+
+def test_python_bm25_agrees_with_sqlite_where_the_idf_clamp_fires(tmp_path):
+    # A term in at least half the rows drives the IDF non-positive, and fts5 clamps it rather
+    # than letting a score go the wrong way. The sample corpus cannot reach that — its commonest
+    # term is in two rows of five — so a parametrize over it passes against a scorer with no
+    # clamp at all.
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "clamp",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "content": f"common word number {i}",
+            }
+            for i in range(4)
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
+        "WHERE slack_fts MATCH ?",
+        ("common",),
+    ).fetchall()
+    assert len(rows) == 4, "the term has to be in every row for the clamp to fire"
+    vocab = store._vocab(conn, "main", "slack_fts", "row")
+    n_docs = conn.execute(f"SELECT doc FROM {vocab} WHERE term = ?", ("common",)).fetchone()[0]
+    n_rows = conn.execute("SELECT COUNT(*) FROM main.slack_fts").fetchone()[0]
+    assert 2 * n_docs >= n_rows, (n_docs, n_rows)
+    for row in rows:
+        mine = store._corpus_bm25(conn, "slack", "common", row["rid"], schema="main")
+        assert mine == pytest.approx(row["r"], rel=1e-9), row["rid"]
+    conn.close()
 
 
 def test_a_posted_message_is_findable_by_search(ov_db):

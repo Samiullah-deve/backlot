@@ -169,8 +169,9 @@ def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
     assert r.content.startswith(b'{"errors":[')
     assert r.json()["data"] is None
     assert "Entity not found" in r.json()["errors"][0]["message"]
-    # control: a clean response still opens with "data"
-    assert gql(client, '{ team(id: "ENG") { id } }', admin_h).content.startswith(b'{"data":')
+    # control: an issue that exists still opens with "data"
+    ok = gql(client, '{ issue(id: "ENG-101") { identifier } }', admin_h)
+    assert ok.content.startswith(b'{"data":')
 
 
 def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):

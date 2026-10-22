@@ -4540,6 +4540,116 @@ def test_a_root_whose_last_reply_goes_is_a_standalone_message_again(wclient, tok
     assert "thread_ts=" not in link
 
 
+def test_a_permalink_names_the_thread_only_for_a_message_in_one(wclient, tokens):
+    # `_permalink` records the measurement. Dropping the `thread_ts` branch left the suite green.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+
+    def link(ts):
+        return wclient.post(
+            "/slack/api/chat.getPermalink", headers=h, data={"channel": cid, "message_ts": ts}
+        ).json()["permalink"]
+
+    alone = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "alone"}
+    ).json()["ts"]
+    assert "?" not in link(alone)
+    root = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "root"}
+    ).json()["ts"]
+    reply = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=h,
+        data={"channel": cid, "text": "reply", "thread_ts": root},
+    ).json()["ts"]
+    for ts in (root, reply):
+        assert f"?thread_ts={root}&cid={cid}" in link(ts)
+
+
+@pytest.mark.parametrize(
+    "method, reads_json",
+    [
+        ("chat.postMessage", True),
+        ("chat.postEphemeral", True),
+        ("chat.update", True),
+        ("chat.delete", True),
+        ("reactions.add", True),
+        ("reactions.remove", True),
+        ("chat.getPermalink", False),
+        ("reactions.get", False),
+    ],
+)
+def test_a_json_body_is_read_only_where_the_spec_declares_one(wclient, tokens, method, reads_json):
+    # `JSON_BODY_METHODS` records the measurement, and dropping any member of it left the suite
+    # green. The property is whether the body was READ: a method that does not read one answers
+    # `invalid_arguments` for the arguments it never saw, where one that does gets past argument
+    # validation to whatever it then makes of them.
+    h = _uh(tokens, "ava@acme.com") | {"Content-Type": "application/json"}
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=_uh(tokens, "ava@acme.com"),
+        data={"channel": cid, "text": "addressable"},
+    ).json()["ts"]
+    body = {
+        "channel": cid,
+        "text": "sent as json",
+        "ts": ts,
+        "message_ts": ts,
+        "timestamp": ts,
+        "name": "eyes",
+        "user": synth.slack_user_id("ava@acme.com"),
+    }
+    answered = wclient.post(f"/slack/api/{method}", headers=h, json=body).json()
+    saw_the_arguments = answered.get("error") != "invalid_arguments"
+    assert saw_the_arguments is reads_json, (method, answered)
+
+
+def test_reactions_remove_takes_off_the_name_it_was_given(wclient, tokens):
+    # Matching any reaction rather than the one named left the suite green.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "two reactions"}
+    ).json()["ts"]
+    for name in ("eyes", "tada"):
+        wclient.post(
+            "/slack/api/reactions.add",
+            headers=h,
+            data={"channel": cid, "timestamp": ts, "name": name},
+        )
+    wclient.post(
+        "/slack/api/reactions.remove",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "eyes"},
+    )
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()
+    assert [r["name"] for r in got["message"]["reactions"]] == ["tada"]
+
+
+@pytest.mark.parametrize("sort", ["score", "timestamp"])
+def test_a_written_message_is_in_a_search_under_either_sort_and_an_in_filter(wclient, tokens, sort):
+    # The overlay merge has a branch per sort and a container filter, and neither was reached
+    # with an overlay hit present.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "zarquonsearch"}
+    ).json()["ts"]
+    hits = wclient.post(
+        "/slack/api/search.messages", headers=h, data={"query": "zarquonsearch", "sort": sort}
+    ).json()["messages"]["matches"]
+    assert ts in [m["ts"] for m in hits], sort
+    scoped = wclient.post(
+        "/slack/api/search.messages",
+        headers=h,
+        data={"query": "zarquonsearch in:#incidents", "sort": sort},
+    ).json()["messages"]["matches"]
+    assert ts in [m["ts"] for m in scoped], sort
+
+
 #: Every write and write-adjacent method, with arguments that would otherwise reach the handler,
 #: and the arguments it requires. One table rather than a test apiece: these are the same two
 #: refusals on nine methods, and a mutation run showed `return err` could be dropped after

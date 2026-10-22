@@ -41,6 +41,9 @@ jobs:
           # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
           # filterwarnings turns into a failure of the test that opened it.
           PYTHONWARNDEFAULTENCODING: "1"
+          # GitHub's ubuntu runner image installs Docker, so the Atlassian MCP test fails here,
+          # naming what `docker info` did, rather than skip inside a run that reads green.
+          BACKLOT_TEST_REQUIRE_DOCKER: "1"
         run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies

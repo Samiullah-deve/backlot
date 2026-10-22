@@ -4,7 +4,8 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here.
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here
+  (``_require_linux_docker``).
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
@@ -52,28 +53,48 @@ from backlot.acl import Acl  # noqa: E402
 from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
 
 
-def _docker_runs_linux_containers() -> bool:
-    """Whether ``docker`` runs Linux containers here. The index of
+def _why_docker_runs_no_linux_containers() -> str | None:
+    """Why ``docker`` cannot run Linux containers here, or None where it can. The index of
     ``ghcr.io/sooperset/mcp-atlassian:latest`` lists ``linux/amd64`` and ``linux/arm64`` images only
     (fetched 2026-10-20), and Docker on ``windows-latest`` answers but runs Windows containers, so
     the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
     has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
+
+    The reason names what ``docker info`` did, since a CI job keeps no other record of it.
     """
     if not shutil.which("docker"):
-        return False
-    try:
-        for template in ("{{.OSType}}", "{{.Host.OS}}"):
+        return "no `docker` on PATH"
+    exits = []
+    for template in ("{{.OSType}}", "{{.Host.OS}}"):
+        try:
             info = subprocess.run(
                 ["docker", "info", "--format", template],
                 capture_output=True,
                 encoding="utf-8",
                 timeout=10,
             )
-            if info.returncode == 0:
-                break
-    except Exception:  # noqa: BLE001
-        return False
-    return info.stdout.strip() == "linux"
+        except Exception as exc:  # noqa: BLE001
+            return f"`docker info` raised {type(exc).__name__}: {exc}"
+        if info.returncode == 0:
+            break
+        first = next(iter(info.stderr.strip().splitlines()), "nothing on stderr")
+        exits.append(f"exited {info.returncode} on `{template}`: {first}")
+    else:
+        return "`docker info` " + "; ".join(exits)
+    os_name = info.stdout.strip()
+    return None if os_name == "linux" else f"`docker info` names {os_name!r} as its OS"
+
+
+def _require_linux_docker() -> None:
+    """Skip the calling test where ``docker`` runs no Linux containers, naming why, or fail it with
+    that reason where ``BACKLOT_TEST_REQUIRE_DOCKER`` is set."""
+    why = _why_docker_runs_no_linux_containers()
+    if why is None:
+        return
+    why = f"mcp-atlassian needs Docker's Linux containers: {why}"
+    if os.environ.get("BACKLOT_TEST_REQUIRE_DOCKER"):
+        pytest.fail(f"BACKLOT_TEST_REQUIRE_DOCKER is set, and {why}")
+    pytest.skip(why)
 
 
 def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
@@ -116,9 +137,9 @@ def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
             "--transport",
             "stdio",
         ],
-        # `_docker_runs_linux_containers` asked the daemon this environment names; mcp 2.3.0's
-        # `stdio_client` would otherwise hand `docker run` a fixed list of variables, DOCKER_HOST
-        # and DOCKER_CONTEXT not among them.
+        # `_why_docker_runs_no_linux_containers` asked the daemon this environment names; mcp
+        # 2.3.0's `stdio_client` would otherwise hand `docker run` a fixed list of variables,
+        # DOCKER_HOST and DOCKER_CONTEXT not among them.
         env=dict(os.environ),
     )
 
@@ -170,19 +191,56 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 # --------------------------------------------------------------------------- Atlassian
 
 
+# What `docker info` wrote to stderr with no daemon (Docker 29.7.2 on macOS, 2026-10-22):
+# `_NO_DAEMON` on each template, exiting 1, and `_NO_HOST_FIELD` after it on `{{.Host.OS}}`.
+_NO_DAEMON = (
+    "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is"
+    " correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file"
+    " or directory"
+)
+_NO_HOST_FIELD = (
+    'template: :1:7: executing "" at <.Host.OS>: can\'t evaluate field Host in type'
+    " system.dockerInfo\n"
+)
+
+
+@pytest.mark.parametrize("required", [None, "1"], ids=["skipped", "required"])
 @pytest.mark.parametrize(
-    ("docker", "answers", "runs"),
+    ("docker", "answers", "why"),
     [
-        pytest.param(None, [], False, id="no-docker"),
-        pytest.param("docker", [(0, "linux\n")], True, id="linux-containers"),
-        pytest.param("docker", [(0, "windows\n")], False, id="windows-containers"),
-        pytest.param("docker", [(1, "\n"), (1, "\n")], False, id="no-daemon"),
-        pytest.param("docker", [(125, ""), (0, "linux\n")], True, id="podman"),
-        pytest.param("docker", [subprocess.TimeoutExpired("docker", 10)], False, id="timeout"),
+        pytest.param(None, [], "no `docker` on PATH", id="no-docker"),
+        pytest.param("docker", [(0, "linux\n", "")], None, id="linux-containers"),
+        pytest.param(
+            "docker",
+            [(0, "windows\n", "")],
+            "`docker info` names 'windows' as its OS",
+            id="windows-containers",
+        ),
+        pytest.param(
+            "docker",
+            [(1, "\n", _NO_DAEMON + "\n"), (1, "\n", _NO_DAEMON + "\n" + _NO_HOST_FIELD)],
+            f"`docker info` exited 1 on `{{{{.OSType}}}}`: {_NO_DAEMON}; exited 1 on"
+            f" `{{{{.Host.OS}}}}`: {_NO_DAEMON}",
+            id="no-daemon",
+        ),
+        pytest.param(
+            "docker",
+            [(1, "", "\n"), (2, "", "")],
+            "`docker info` exited 1 on `{{.OSType}}`: nothing on stderr; exited 2 on"
+            " `{{.Host.OS}}`: nothing on stderr",
+            id="no-daemon-silent",
+        ),
+        pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, id="podman"),
+        pytest.param(
+            "docker",
+            [subprocess.TimeoutExpired("docker", 10)],
+            "`docker info` raised TimeoutExpired: Command 'docker' timed out after 10 seconds",
+            id="timeout",
+        ),
     ],
 )
 def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
-    monkeypatch, docker, answers, runs
+    monkeypatch, docker, answers, why, required
 ):
     calls = []
 
@@ -191,11 +249,23 @@ def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
         answer = answers[len(calls) - 1]
         if isinstance(answer, Exception):
             raise answer
-        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr="")
+        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr=answer[2])
 
     monkeypatch.setattr(shutil, "which", lambda name: docker)
     monkeypatch.setattr(subprocess, "run", run)
-    assert _docker_runs_linux_containers() is runs
+    if required is None:
+        monkeypatch.delenv("BACKLOT_TEST_REQUIRE_DOCKER", raising=False)
+    else:
+        monkeypatch.setenv("BACKLOT_TEST_REQUIRE_DOCKER", required)
+    if why is None:
+        _require_linux_docker()
+    else:
+        outcome = pytest.skip.Exception if required is None else pytest.fail.Exception
+        with pytest.raises((pytest.skip.Exception, pytest.fail.Exception)) as raised:
+            _require_linux_docker()
+        assert type(raised.value) is outcome
+        prefix = "" if required is None else "BACKLOT_TEST_REQUIRE_DOCKER is set, and "
+        assert raised.value.msg == f"{prefix}mcp-atlassian needs Docker's Linux containers: {why}"
     asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
     assert calls == asked[: len(answers)]
 
@@ -206,9 +276,6 @@ def test_docker_run_keeps_the_variables_that_pick_its_daemon(monkeypatch, name):
     assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
 
 
-@pytest.mark.skipif(
-    not _docker_runs_linux_containers(), reason="no Docker daemon running Linux containers"
-)
 def test_mcp_atlassian_acl_enforced(live_server):
     """A Jira issue the admin reads through mcp-atlassian is not-found for a scoped user.
 
@@ -217,6 +284,7 @@ def test_mcp_atlassian_acl_enforced(live_server):
     ACL's. Without the matching username the read would fail on auth instead, which reaches this
     test the same way and would leave it green with the ACL doing nothing; the third read is the
     control that rules that out."""
+    _require_linux_docker()
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")

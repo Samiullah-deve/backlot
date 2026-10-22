@@ -402,12 +402,15 @@ def unsupported_conversion() -> GoogleError:
     )
 
 
-def bad_field_mask(path: str) -> GoogleError:
+def bad_field_mask(mask: str, path: str) -> GoogleError:
     """A ``fields`` mask naming something the response has no field for.
 
     Measured on Sheets: the top-level message is the generic ``Request contains an invalid
     argument.`` and the path that failed is named only inside a ``google.rpc.BadRequest`` detail —
-    so a client that wants to know WHICH path was wrong has to read `details`."""
+    so a client that wants to know WHICH path was wrong has to read `details`. The violation's
+    `field` is the whole mask, each ``/`` written ``.``: measured 2026-10-22, `spreadsheetId,bogus`
+    named `spreadsheetId,bogus` there and `sheets(properties/bogus)` named
+    `sheets(properties.bogus)`, the description naming the path alone."""
     return GoogleError(
         400,
         "Request contains an invalid argument.",
@@ -418,7 +421,7 @@ def bad_field_mask(path: str) -> GoogleError:
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
                 "fieldViolations": [
                     {
-                        "field": path,
+                        "field": mask.replace("/", "."),
                         "description": (
                             "Error expanding 'fields' parameter. Cannot find matching fields for "
                             f"path '{path}'."

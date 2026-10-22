@@ -1,0 +1,901 @@
+{
+  "about": "The fields each message a Sheets read answers with declares. Written by scripts/gen_sheets_fields.py; do not edit by hand.",
+  "document": "https://sheets.googleapis.com/$discovery/rest?version=v4",
+  "schemas": {
+    "BandedRange": {
+      "bandedRangeId": null,
+      "bandedRangeReference": null,
+      "columnProperties": "BandingProperties",
+      "range": "GridRange",
+      "rowProperties": "BandingProperties"
+    },
+    "BandingProperties": {
+      "firstBandColor": "Color",
+      "firstBandColorStyle": "ColorStyle",
+      "footerColor": "Color",
+      "footerColorStyle": "ColorStyle",
+      "headerColor": "Color",
+      "headerColorStyle": "ColorStyle",
+      "secondBandColor": "Color",
+      "secondBandColorStyle": "ColorStyle"
+    },
+    "BaselineValueFormat": {
+      "comparisonType": null,
+      "description": null,
+      "negativeColor": "Color",
+      "negativeColorStyle": "ColorStyle",
+      "position": "TextPosition",
+      "positiveColor": "Color",
+      "positiveColorStyle": "ColorStyle",
+      "textFormat": "TextFormat"
+    },
+    "BasicChartAxis": {
+      "format": "TextFormat",
+      "position": null,
+      "title": null,
+      "titleTextPosition": "TextPosition",
+      "viewWindowOptions": "ChartAxisViewWindowOptions"
+    },
+    "BasicChartDomain": {
+      "domain": "ChartData",
+      "reversed": null
+    },
+    "BasicChartSeries": {
+      "color": "Color",
+      "colorStyle": "ColorStyle",
+      "dataLabel": "DataLabel",
+      "lineStyle": "LineStyle",
+      "pointStyle": "PointStyle",
+      "series": "ChartData",
+      "styleOverrides": "BasicSeriesDataPointStyleOverride",
+      "targetAxis": null,
+      "type": null
+    },
+    "BasicChartSpec": {
+      "axis": "BasicChartAxis",
+      "chartType": null,
+      "compareMode": null,
+      "domains": "BasicChartDomain",
+      "headerCount": null,
+      "interpolateNulls": null,
+      "legendPosition": null,
+      "lineSmoothing": null,
+      "series": "BasicChartSeries",
+      "stackedType": null,
+      "threeDimensional": null,
+      "totalDataLabel": "DataLabel"
+    },
+    "BasicFilter": {
+      "criteria": null,
+      "filterSpecs": "FilterSpec",
+      "range": "GridRange",
+      "sortSpecs": "SortSpec",
+      "tableId": null
+    },
+    "BasicSeriesDataPointStyleOverride": {
+      "color": "Color",
+      "colorStyle": "ColorStyle",
+      "index": null,
+      "pointStyle": "PointStyle"
+    },
+    "BatchGetValuesByDataFilterResponse": {
+      "spreadsheetId": null,
+      "valueRanges": "MatchedValueRange"
+    },
+    "BatchGetValuesResponse": {
+      "spreadsheetId": null,
+      "valueRanges": "ValueRange"
+    },
+    "BigQueryDataSourceSpec": {
+      "projectId": null,
+      "querySpec": "BigQueryQuerySpec",
+      "tableSpec": "BigQueryTableSpec"
+    },
+    "BigQueryQuerySpec": {
+      "rawQuery": null
+    },
+    "BigQueryTableSpec": {
+      "datasetId": null,
+      "tableId": null,
+      "tableProjectId": null
+    },
+    "BooleanCondition": {
+      "type": null,
+      "values": "ConditionValue"
+    },
+    "BooleanRule": {
+      "condition": "BooleanCondition",
+      "format": "CellFormat"
+    },
+    "Border": {
+      "color": "Color",
+      "colorStyle": "ColorStyle",
+      "style": null,
+      "width": null
+    },
+    "Borders": {
+      "bottom": "Border",
+      "left": "Border",
+      "right": "Border",
+      "top": "Border"
+    },
+    "BubbleChartSpec": {
+      "bubbleBorderColor": "Color",
+      "bubbleBorderColorStyle": "ColorStyle",
+      "bubbleLabels": "ChartData",
+      "bubbleMaxRadiusSize": null,
+      "bubbleMinRadiusSize": null,
+      "bubbleOpacity": null,
+      "bubbleSizes": "ChartData",
+      "bubbleTextStyle": "TextFormat",
+      "domain": "ChartData",
+      "groupIds": "ChartData",
+      "legendPosition": null,
+      "series": "ChartData"
+    },
+    "CandlestickChartSpec": {
+      "data": "CandlestickData",
+      "domain": "CandlestickDomain"
+    },
+    "CandlestickData": {
+      "closeSeries": "CandlestickSeries",
+      "highSeries": "CandlestickSeries",
+      "lowSeries": "CandlestickSeries",
+      "openSeries": "CandlestickSeries"
+    },
+    "CandlestickDomain": {
+      "data": "ChartData",
+      "reversed": null
+    },
+    "CandlestickSeries": {
+      "data": "ChartData"
+    },
+    "CellData": {
+      "chipRuns": "ChipRun",
+      "dataSourceFormula": "DataSourceFormula",
+      "dataSourceTable": "DataSourceTable",
+      "dataValidation": "DataValidationRule",
+      "effectiveFormat": "CellFormat",
+      "effectiveValue": "ExtendedValue",
+      "formattedValue": null,
+      "hyperlink": null,
+      "note": null,
+      "pivotTable": "PivotTable",
+      "textFormatRuns": "TextFormatRun",
+      "userEnteredFormat": "CellFormat",
+      "userEnteredValue": "ExtendedValue"
+    },
+    "CellFormat": {
+      "backgroundColor": "Color",
+      "backgroundColorStyle": "ColorStyle",
+      "borders": "Borders",
+      "horizontalAlignment": null,
+      "hyperlinkDisplayType": null,
+      "numberFormat": "NumberFormat",
+      "padding": "Padding",
+      "textDirection": null,
+      "textFormat": "TextFormat",
+      "textRotation": "TextRotation",
+      "verticalAlignment": null,
+      "wrapStrategy": null
+    },
+    "ChartAxisViewWindowOptions": {
+      "viewWindowMax": null,
+      "viewWindowMin": null,
+      "viewWindowMode": null
+    },
+    "ChartCustomNumberFormatOptions": {
+      "prefix": null,
+      "suffix": null
+    },
+    "ChartData": {
+      "aggregateType": null,
+      "columnReference": "DataSourceColumnReference",
+      "groupRule": "ChartGroupRule",
+      "sourceRange": "ChartSourceRange"
+    },
+    "ChartDateTimeRule": {
+      "type": null
+    },
+    "ChartGroupRule": {
+      "dateTimeRule": "ChartDateTimeRule",
+      "histogramRule": "ChartHistogramRule"
+    },
+    "ChartHistogramRule": {
+      "intervalSize": null,
+      "maxValue": null,
+      "minValue": null
+    },
+    "ChartSourceRange": {
+      "sources": "GridRange"
+    },
+    "ChartSpec": {
+      "altText": null,
+      "backgroundColor": "Color",
+      "backgroundColorStyle": "ColorStyle",
+      "basicChart": "BasicChartSpec",
+      "bubbleChart": "BubbleChartSpec",
+      "candlestickChart": "CandlestickChartSpec",
+      "dataSourceChartProperties": "DataSourceChartProperties",
+      "filterSpecs": "FilterSpec",
+      "fontName": null,
+      "hiddenDimensionStrategy": null,
+      "histogramChart": "HistogramChartSpec",
+      "maximized": null,
+      "orgChart": "OrgChartSpec",
+      "pieChart": "PieChartSpec",
+      "scorecardChart": "ScorecardChartSpec",
+      "sortSpecs": "SortSpec",
+      "subtitle": null,
+      "subtitleTextFormat": "TextFormat",
+      "subtitleTextPosition": "TextPosition",
+      "title": null,
+      "titleTextFormat": "TextFormat",
+      "titleTextPosition": "TextPosition",
+      "treemapChart": "TreemapChartSpec",
+      "waterfallChart": "WaterfallChartSpec"
+    },
+    "Chip": {
+      "personProperties": "PersonProperties",
+      "richLinkProperties": "RichLinkProperties"
+    },
+    "ChipRun": {
+      "chip": "Chip",
+      "startIndex": null
+    },
+    "Color": {
+      "alpha": null,
+      "blue": null,
+      "green": null,
+      "red": null
+    },
+    "ColorStyle": {
+      "rgbColor": "Color",
+      "themeColor": null
+    },
+    "CommentAnchor": {
+      "anchorId": null,
+      "range": "GridRange"
+    },
+    "CommentThread": {
+      "anchorId": null,
+      "commentId": null,
+      "headPost": "Post",
+      "plainTextQuote": null,
+      "replies": "Post",
+      "status": null
+    },
+    "ConditionValue": {
+      "relativeDate": null,
+      "userEnteredValue": null
+    },
+    "ConditionalFormatRule": {
+      "booleanRule": "BooleanRule",
+      "gradientRule": "GradientRule",
+      "ranges": "GridRange"
+    },
+    "DataExecutionStatus": {
+      "errorCode": null,
+      "errorMessage": null,
+      "lastRefreshTime": null,
+      "state": null
+    },
+    "DataFilter": {
+      "a1Range": null,
+      "developerMetadataLookup": "DeveloperMetadataLookup",
+      "gridRange": "GridRange"
+    },
+    "DataLabel": {
+      "customLabelData": "ChartData",
+      "placement": null,
+      "textFormat": "TextFormat",
+      "type": null
+    },
+    "DataSource": {
+      "calculatedColumns": "DataSourceColumn",
+      "dataSourceId": null,
+      "sheetId": null,
+      "spec": "DataSourceSpec"
+    },
+    "DataSourceChartProperties": {
+      "dataExecutionStatus": "DataExecutionStatus",
+      "dataSourceId": null
+    },
+    "DataSourceColumn": {
+      "formula": null,
+      "reference": "DataSourceColumnReference"
+    },
+    "DataSourceColumnReference": {
+      "name": null
+    },
+    "DataSourceFormula": {
+      "dataExecutionStatus": "DataExecutionStatus",
+      "dataSourceId": null
+    },
+    "DataSourceParameter": {
+      "name": null,
+      "namedRangeId": null,
+      "range": "GridRange"
+    },
+    "DataSourceRefreshDailySchedule": {
+      "startTime": "TimeOfDay"
+    },
+    "DataSourceRefreshMonthlySchedule": {
+      "daysOfMonth": null,
+      "startTime": "TimeOfDay"
+    },
+    "DataSourceRefreshSchedule": {
+      "dailySchedule": "DataSourceRefreshDailySchedule",
+      "enabled": null,
+      "monthlySchedule": "DataSourceRefreshMonthlySchedule",
+      "nextRun": "Interval",
+      "refreshScope": null,
+      "weeklySchedule": "DataSourceRefreshWeeklySchedule"
+    },
+    "DataSourceRefreshWeeklySchedule": {
+      "daysOfWeek": null,
+      "startTime": "TimeOfDay"
+    },
+    "DataSourceSheetProperties": {
+      "columns": "DataSourceColumn",
+      "dataExecutionStatus": "DataExecutionStatus",
+      "dataSourceId": null
+    },
+    "DataSourceSpec": {
+      "bigQuery": "BigQueryDataSourceSpec",
+      "looker": "LookerDataSourceSpec",
+      "parameters": "DataSourceParameter"
+    },
+    "DataSourceTable": {
+      "columnSelectionType": null,
+      "columns": "DataSourceColumnReference",
+      "dataExecutionStatus": "DataExecutionStatus",
+      "dataSourceId": null,
+      "filterSpecs": "FilterSpec",
+      "rowLimit": null,
+      "sortSpecs": "SortSpec"
+    },
+    "DataValidationRule": {
+      "condition": "BooleanCondition",
+      "inputMessage": null,
+      "showCustomUi": null,
+      "strict": null
+    },
+    "DateTimeRule": {
+      "type": null
+    },
+    "DeveloperMetadata": {
+      "location": "DeveloperMetadataLocation",
+      "metadataId": null,
+      "metadataKey": null,
+      "metadataValue": null,
+      "visibility": null
+    },
+    "DeveloperMetadataLocation": {
+      "dimensionRange": "DimensionRange",
+      "locationType": null,
+      "sheetId": null,
+      "spreadsheet": null
+    },
+    "DeveloperMetadataLookup": {
+      "locationMatchingStrategy": null,
+      "locationType": null,
+      "metadataId": null,
+      "metadataKey": null,
+      "metadataLocation": "DeveloperMetadataLocation",
+      "metadataValue": null,
+      "visibility": null
+    },
+    "DimensionGroup": {
+      "collapsed": null,
+      "depth": null,
+      "range": "DimensionRange"
+    },
+    "DimensionProperties": {
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "developerMetadata": "DeveloperMetadata",
+      "hiddenByFilter": null,
+      "hiddenByUser": null,
+      "pixelSize": null
+    },
+    "DimensionRange": {
+      "dimension": null,
+      "endIndex": null,
+      "sheetId": null,
+      "startIndex": null
+    },
+    "Editors": {
+      "domainUsersCanEdit": null,
+      "groups": null,
+      "users": null
+    },
+    "EmbeddedChart": {
+      "border": "EmbeddedObjectBorder",
+      "chartId": null,
+      "position": "EmbeddedObjectPosition",
+      "spec": "ChartSpec"
+    },
+    "EmbeddedObjectBorder": {
+      "color": "Color",
+      "colorStyle": "ColorStyle"
+    },
+    "EmbeddedObjectPosition": {
+      "newSheet": null,
+      "overlayPosition": "OverlayPosition",
+      "sheetId": null
+    },
+    "ErrorValue": {
+      "message": null,
+      "type": null
+    },
+    "ExtendedValue": {
+      "boolValue": null,
+      "errorValue": "ErrorValue",
+      "formulaValue": null,
+      "numberValue": null,
+      "stringValue": null
+    },
+    "FilterCriteria": {
+      "condition": "BooleanCondition",
+      "hiddenValues": null,
+      "visibleBackgroundColor": "Color",
+      "visibleBackgroundColorStyle": "ColorStyle",
+      "visibleForegroundColor": "Color",
+      "visibleForegroundColorStyle": "ColorStyle"
+    },
+    "FilterSpec": {
+      "columnIndex": null,
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "filterCriteria": "FilterCriteria"
+    },
+    "FilterView": {
+      "criteria": null,
+      "filterSpecs": "FilterSpec",
+      "filterViewId": null,
+      "namedRangeId": null,
+      "range": "GridRange",
+      "sortSpecs": "SortSpec",
+      "tableId": null,
+      "title": null
+    },
+    "GradientRule": {
+      "maxpoint": "InterpolationPoint",
+      "midpoint": "InterpolationPoint",
+      "minpoint": "InterpolationPoint"
+    },
+    "GridCoordinate": {
+      "columnIndex": null,
+      "rowIndex": null,
+      "sheetId": null
+    },
+    "GridData": {
+      "columnMetadata": "DimensionProperties",
+      "rowData": "RowData",
+      "rowMetadata": "DimensionProperties",
+      "startColumn": null,
+      "startRow": null
+    },
+    "GridProperties": {
+      "columnCount": null,
+      "columnGroupControlAfter": null,
+      "frozenColumnCount": null,
+      "frozenRowCount": null,
+      "hideGridlines": null,
+      "rowCount": null,
+      "rowGroupControlAfter": null
+    },
+    "GridRange": {
+      "endColumnIndex": null,
+      "endRowIndex": null,
+      "sheetId": null,
+      "startColumnIndex": null,
+      "startRowIndex": null
+    },
+    "HistogramChartSpec": {
+      "bucketSize": null,
+      "legendPosition": null,
+      "outlierPercentile": null,
+      "series": "HistogramSeries",
+      "showItemDividers": null
+    },
+    "HistogramRule": {
+      "end": null,
+      "interval": null,
+      "start": null
+    },
+    "HistogramSeries": {
+      "barColor": "Color",
+      "barColorStyle": "ColorStyle",
+      "data": "ChartData"
+    },
+    "InterpolationPoint": {
+      "color": "Color",
+      "colorStyle": "ColorStyle",
+      "type": null,
+      "value": null
+    },
+    "Interval": {
+      "endTime": null,
+      "startTime": null
+    },
+    "IterativeCalculationSettings": {
+      "convergenceThreshold": null,
+      "maxIterations": null
+    },
+    "KeyValueFormat": {
+      "position": "TextPosition",
+      "textFormat": "TextFormat"
+    },
+    "LineStyle": {
+      "type": null,
+      "width": null
+    },
+    "Link": {
+      "uri": null
+    },
+    "LookerDataSourceSpec": {
+      "explore": null,
+      "instanceUri": null,
+      "model": null
+    },
+    "ManualRule": {
+      "groups": "ManualRuleGroup"
+    },
+    "ManualRuleGroup": {
+      "groupName": "ExtendedValue",
+      "items": "ExtendedValue"
+    },
+    "MatchedValueRange": {
+      "dataFilters": "DataFilter",
+      "valueRange": "ValueRange"
+    },
+    "NamedRange": {
+      "name": null,
+      "namedRangeId": null,
+      "range": "GridRange"
+    },
+    "NumberFormat": {
+      "pattern": null,
+      "type": null
+    },
+    "OrgChartSpec": {
+      "labels": "ChartData",
+      "nodeColor": "Color",
+      "nodeColorStyle": "ColorStyle",
+      "nodeSize": null,
+      "parentLabels": "ChartData",
+      "selectedNodeColor": "Color",
+      "selectedNodeColorStyle": "ColorStyle",
+      "tooltips": "ChartData"
+    },
+    "OverlayPosition": {
+      "anchorCell": "GridCoordinate",
+      "heightPixels": null,
+      "offsetXPixels": null,
+      "offsetYPixels": null,
+      "widthPixels": null
+    },
+    "Padding": {
+      "bottom": null,
+      "left": null,
+      "right": null,
+      "top": null
+    },
+    "PersonProperties": {
+      "displayFormat": null,
+      "email": null
+    },
+    "PieChartSpec": {
+      "domain": "ChartData",
+      "legendPosition": null,
+      "pieHole": null,
+      "series": "ChartData",
+      "threeDimensional": null
+    },
+    "PivotFilterCriteria": {
+      "condition": "BooleanCondition",
+      "visibleByDefault": null,
+      "visibleValues": null
+    },
+    "PivotFilterSpec": {
+      "columnOffsetIndex": null,
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "filterCriteria": "PivotFilterCriteria"
+    },
+    "PivotGroup": {
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "groupLimit": "PivotGroupLimit",
+      "groupRule": "PivotGroupRule",
+      "label": null,
+      "repeatHeadings": null,
+      "showTotals": null,
+      "sortOrder": null,
+      "sourceColumnOffset": null,
+      "valueBucket": "PivotGroupSortValueBucket",
+      "valueMetadata": "PivotGroupValueMetadata"
+    },
+    "PivotGroupLimit": {
+      "applyOrder": null,
+      "countLimit": null
+    },
+    "PivotGroupRule": {
+      "dateTimeRule": "DateTimeRule",
+      "histogramRule": "HistogramRule",
+      "manualRule": "ManualRule"
+    },
+    "PivotGroupSortValueBucket": {
+      "buckets": "ExtendedValue",
+      "valuesIndex": null
+    },
+    "PivotGroupValueMetadata": {
+      "collapsed": null,
+      "value": "ExtendedValue"
+    },
+    "PivotTable": {
+      "columns": "PivotGroup",
+      "criteria": null,
+      "dataExecutionStatus": "DataExecutionStatus",
+      "dataSourceId": null,
+      "filterSpecs": "PivotFilterSpec",
+      "rows": "PivotGroup",
+      "source": "GridRange",
+      "valueLayout": null,
+      "values": "PivotValue"
+    },
+    "PivotValue": {
+      "calculatedDisplayType": null,
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "formula": null,
+      "name": null,
+      "sourceColumnOffset": null,
+      "summarizeFunction": null
+    },
+    "PointStyle": {
+      "shape": null,
+      "size": null
+    },
+    "Post": {
+      "assigneeEmail": null,
+      "author": "PostAuthor",
+      "commentAction": null,
+      "content": null,
+      "contentHtml": null,
+      "createTime": null,
+      "deleted": null,
+      "fromCopiedSpreadsheet": null,
+      "fromImportedSpreadsheet": null,
+      "postId": null,
+      "updateTime": null
+    },
+    "PostAuthor": {
+      "anonymous": null,
+      "displayName": null,
+      "me": null,
+      "user": null
+    },
+    "ProtectedRange": {
+      "description": null,
+      "editors": "Editors",
+      "namedRangeId": null,
+      "protectedRangeId": null,
+      "range": "GridRange",
+      "requestingUserCanEdit": null,
+      "tableId": null,
+      "unprotectedRanges": "GridRange",
+      "warningOnly": null
+    },
+    "RichLinkProperties": {
+      "mimeType": null,
+      "uri": null
+    },
+    "RowData": {
+      "values": "CellData"
+    },
+    "ScorecardChartSpec": {
+      "aggregateType": null,
+      "baselineValueData": "ChartData",
+      "baselineValueFormat": "BaselineValueFormat",
+      "customFormatOptions": "ChartCustomNumberFormatOptions",
+      "keyValueData": "ChartData",
+      "keyValueFormat": "KeyValueFormat",
+      "numberFormatSource": null,
+      "scaleFactor": null
+    },
+    "Sheet": {
+      "bandedRanges": "BandedRange",
+      "basicFilter": "BasicFilter",
+      "charts": "EmbeddedChart",
+      "columnGroups": "DimensionGroup",
+      "commentAnchors": "CommentAnchor",
+      "conditionalFormats": "ConditionalFormatRule",
+      "data": "GridData",
+      "developerMetadata": "DeveloperMetadata",
+      "filterViews": "FilterView",
+      "merges": "GridRange",
+      "properties": "SheetProperties",
+      "protectedRanges": "ProtectedRange",
+      "rowGroups": "DimensionGroup",
+      "slicers": "Slicer",
+      "tables": "Table"
+    },
+    "SheetProperties": {
+      "dataSourceSheetProperties": "DataSourceSheetProperties",
+      "gridProperties": "GridProperties",
+      "hidden": null,
+      "index": null,
+      "rightToLeft": null,
+      "sheetId": null,
+      "sheetType": null,
+      "tabColor": "Color",
+      "tabColorStyle": "ColorStyle",
+      "title": null
+    },
+    "Slicer": {
+      "position": "EmbeddedObjectPosition",
+      "slicerId": null,
+      "spec": "SlicerSpec"
+    },
+    "SlicerSpec": {
+      "applyToPivotTables": null,
+      "backgroundColor": "Color",
+      "backgroundColorStyle": "ColorStyle",
+      "columnIndex": null,
+      "dataRange": "GridRange",
+      "filterCriteria": "FilterCriteria",
+      "horizontalAlignment": null,
+      "textFormat": "TextFormat",
+      "title": null
+    },
+    "SortSpec": {
+      "backgroundColor": "Color",
+      "backgroundColorStyle": "ColorStyle",
+      "dataSourceColumnReference": "DataSourceColumnReference",
+      "dimensionIndex": null,
+      "foregroundColor": "Color",
+      "foregroundColorStyle": "ColorStyle",
+      "sortOrder": null
+    },
+    "Spreadsheet": {
+      "comments": "CommentThread",
+      "commentsViewMode": null,
+      "dataSourceSchedules": "DataSourceRefreshSchedule",
+      "dataSources": "DataSource",
+      "developerMetadata": "DeveloperMetadata",
+      "namedRanges": "NamedRange",
+      "properties": "SpreadsheetProperties",
+      "sheets": "Sheet",
+      "spreadsheetId": null,
+      "spreadsheetUrl": null
+    },
+    "SpreadsheetProperties": {
+      "autoRecalc": null,
+      "defaultFormat": "CellFormat",
+      "importFunctionsExternalUrlAccessAllowed": null,
+      "iterativeCalculationSettings": "IterativeCalculationSettings",
+      "locale": null,
+      "spreadsheetTheme": "SpreadsheetTheme",
+      "timeZone": null,
+      "title": null
+    },
+    "SpreadsheetTheme": {
+      "primaryFontFamily": null,
+      "themeColors": "ThemeColorPair"
+    },
+    "Table": {
+      "columnProperties": "TableColumnProperties",
+      "name": null,
+      "range": "GridRange",
+      "rowsProperties": "TableRowsProperties",
+      "tableId": null
+    },
+    "TableColumnDataValidationRule": {
+      "condition": "BooleanCondition"
+    },
+    "TableColumnProperties": {
+      "columnIndex": null,
+      "columnName": null,
+      "columnType": null,
+      "dataValidationRule": "TableColumnDataValidationRule"
+    },
+    "TableRowsProperties": {
+      "firstBandColorStyle": "ColorStyle",
+      "footerColorStyle": "ColorStyle",
+      "headerColorStyle": "ColorStyle",
+      "secondBandColorStyle": "ColorStyle"
+    },
+    "TextFormat": {
+      "bold": null,
+      "fontFamily": null,
+      "fontSize": null,
+      "foregroundColor": "Color",
+      "foregroundColorStyle": "ColorStyle",
+      "italic": null,
+      "link": "Link",
+      "strikethrough": null,
+      "underline": null
+    },
+    "TextFormatRun": {
+      "format": "TextFormat",
+      "startIndex": null
+    },
+    "TextPosition": {
+      "horizontalAlignment": null
+    },
+    "TextRotation": {
+      "angle": null,
+      "vertical": null
+    },
+    "ThemeColorPair": {
+      "color": "ColorStyle",
+      "colorType": null
+    },
+    "TimeOfDay": {
+      "hours": null,
+      "minutes": null,
+      "nanos": null,
+      "seconds": null
+    },
+    "TreemapChartColorScale": {
+      "maxValueColor": "Color",
+      "maxValueColorStyle": "ColorStyle",
+      "midValueColor": "Color",
+      "midValueColorStyle": "ColorStyle",
+      "minValueColor": "Color",
+      "minValueColorStyle": "ColorStyle",
+      "noDataColor": "Color",
+      "noDataColorStyle": "ColorStyle"
+    },
+    "TreemapChartSpec": {
+      "colorData": "ChartData",
+      "colorScale": "TreemapChartColorScale",
+      "headerColor": "Color",
+      "headerColorStyle": "ColorStyle",
+      "hideTooltips": null,
+      "hintedLevels": null,
+      "labels": "ChartData",
+      "levels": null,
+      "maxValue": null,
+      "minValue": null,
+      "parentLabels": "ChartData",
+      "sizeData": "ChartData",
+      "textFormat": "TextFormat"
+    },
+    "ValueRange": {
+      "majorDimension": null,
+      "range": null,
+      "values": null
+    },
+    "WaterfallChartColumnStyle": {
+      "color": "Color",
+      "colorStyle": "ColorStyle",
+      "label": null
+    },
+    "WaterfallChartCustomSubtotal": {
+      "dataIsSubtotal": null,
+      "label": null,
+      "subtotalIndex": null
+    },
+    "WaterfallChartDomain": {
+      "data": "ChartData",
+      "reversed": null
+    },
+    "WaterfallChartSeries": {
+      "customSubtotals": "WaterfallChartCustomSubtotal",
+      "data": "ChartData",
+      "dataLabel": "DataLabel",
+      "hideTrailingSubtotal": null,
+      "negativeColumnsStyle": "WaterfallChartColumnStyle",
+      "positiveColumnsStyle": "WaterfallChartColumnStyle",
+      "subtotalColumnsStyle": "WaterfallChartColumnStyle"
+    },
+    "WaterfallChartSpec": {
+      "connectorLineStyle": "LineStyle",
+      "domain": "WaterfallChartDomain",
+      "firstValueIsTotal": null,
+      "hideConnectorLines": null,
+      "series": "WaterfallChartSeries",
+      "stackedType": null,
+      "totalDataLabel": "DataLabel"
+    }
+  }
+}

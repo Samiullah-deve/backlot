@@ -172,3 +172,16 @@ jobs:
             exit 0
           fi
           exit "$status"
+
+      # backlot/data/sheets_fields.json is written from the Sheets discovery document the same way.
+      - name: Check the table written from the Sheets discovery document
+        if: ${{ !cancelled() && matrix.source == 'google_drive' }}
+        run: |
+          set +e
+          python scripts/gen_sheets_fields.py --check
+          status=$?
+          if [ "$status" = 2 ]; then
+            echo "::warning::The Sheets discovery document could not be read; backlot/data/sheets_fields.json went unchecked."
+            exit 0
+          fi
+          exit "$status"

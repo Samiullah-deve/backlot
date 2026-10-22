@@ -4540,6 +4540,87 @@ def test_a_root_whose_last_reply_goes_is_a_standalone_message_again(wclient, tok
     assert "thread_ts=" not in link
 
 
+#: Every write and write-adjacent method, with arguments that would otherwise reach the handler,
+#: and the arguments it requires. One table rather than a test apiece: these are the same two
+#: refusals on nine methods, and a mutation run showed `return err` could be dropped after
+#: `_caller_or_error`, `_missing_argument` or `_writable_channel` on eight of them with the suite
+#: still green.
+_WRITE_METHODS = {
+    "chat.postMessage": ({"channel": "CID", "text": "x"}, ["channel"]),
+    "chat.postEphemeral": ({"channel": "CID", "user": "UID", "text": "x"}, ["channel", "user"]),
+    "chat.update": ({"channel": "CID", "ts": "TS", "text": "x"}, ["channel", "ts"]),
+    "chat.delete": ({"channel": "CID", "ts": "TS"}, ["channel", "ts"]),
+    "chat.getPermalink": ({"channel": "CID", "message_ts": "TS"}, ["channel", "message_ts"]),
+    "reactions.add": ({"channel": "CID", "timestamp": "TS", "name": "eyes"}, ["name"]),
+    "reactions.remove": ({"channel": "CID", "timestamp": "TS", "name": "eyes"}, ["name"]),
+    "reactions.get": ({"channel": "CID", "timestamp": "TS"}, []),
+    "reactions.list": ({}, []),
+}
+
+
+@pytest.mark.parametrize("method", sorted(_WRITE_METHODS))
+def test_every_write_method_refuses_a_caller_with_no_credential(wclient, tokens, method):
+    args, _ = _WRITE_METHODS[method]
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=_uh(tokens, "ava@acme.com"),
+        data={"channel": cid, "text": "a message to address"},
+    ).json()["ts"]
+    sent = {
+        k: {"CID": cid, "TS": ts, "UID": synth.slack_user_id("ava@acme.com")}.get(v, v)
+        for k, v in args.items()
+    }
+    assert wclient.post(f"/slack/api/{method}", data=sent).json() == {
+        "ok": False,
+        "error": "not_authed",
+    }
+
+
+@pytest.mark.parametrize("method", sorted(m for m in _WRITE_METHODS if _WRITE_METHODS[m][1]))
+def test_every_write_method_names_each_argument_it_requires(wclient, tokens, method):
+    args, required = _WRITE_METHODS[method]
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "addressable"}
+    ).json()["ts"]
+    filled = {
+        k: {"CID": cid, "TS": ts, "UID": synth.slack_user_id("ava@acme.com")}.get(v, v)
+        for k, v in args.items()
+    }
+    for name in required:
+        answered = wclient.post(
+            f"/slack/api/{method}", headers=h, data={k: v for k, v in filled.items() if k != name}
+        ).json()
+        assert answered["ok"] is False, (method, name)
+        assert answered["error"] == "invalid_arguments", (method, name)
+        assert (
+            f"[ERROR] missing required field: {name}" in (answered["response_metadata"]["messages"])
+        ), (method, name)
+
+
+@pytest.mark.parametrize("method", sorted(_WRITE_METHODS))
+def test_every_write_method_hides_a_channel_the_caller_cannot_see(wclient, tokens, method):
+    args, _ = _WRITE_METHODS[method]
+    if "channel" not in args:
+        pytest.skip("addresses no channel")
+    # bob cannot see people-confidential, and must be told it does not exist rather than
+    # anything about what is in it.
+    sent = {
+        k: {
+            "CID": synth.slack_channel_id("people-confidential"),
+            "TS": "1.000001",
+            "UID": "U0",
+        }.get(v, v)
+        for k, v in args.items()
+    }
+    answered = wclient.post(
+        f"/slack/api/{method}", headers=_uh(tokens, "bob@acme.com"), data=sent
+    ).json()
+    assert answered == {"ok": False, "error": "channel_not_found"}, method
+
+
 def _a_corpus_message(ro_conn, shape: str) -> tuple[str, str, str]:
     """``(author, channel, ts)`` of a corpus message of this shape. The sample corpus holds one
     threaded channel and two standalone messages, in different channels, so neither row can be
